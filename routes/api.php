@@ -35,12 +35,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/user', [AuthController::class, 'user']);
     
     // Apps routes
-    Route::get('/apps', [AppController::class, 'index']);
-    Route::get('/apps/{app}', [AppController::class, 'show']);
-    Route::post('/apps', [AppController::class, 'store']);
-    Route::put('/apps/{app}', [AppController::class, 'update']);
-    Route::delete('/apps/{app}', [AppController::class, 'destroy']);
-    Route::get('/apps/{app}/stats', [AppController::class, 'stats']);
+    Route::get('/apps', [AppController::class, 'index'])->middleware('permission:apps.view');
+    Route::get('/apps/{app}', [AppController::class, 'show'])->middleware('permission:apps.view');
+    Route::post('/apps', [AppController::class, 'store'])->middleware('permission:apps.add');
+    Route::post('/apps/{app}/resync', [AppController::class, 'resync'])->middleware('permission:apps.add');
+    Route::delete('/apps/{app}', [AppController::class, 'destroy'])->middleware('permission:apps.delete');
+    Route::get('/apps/{app}/stats', [AppController::class, 'stats'])->middleware('permission:apps.view');
     
     // Installations routes
     Route::get('/installations/filters', [InstallationController::class, 'filters'])->middleware('permission:installations.view');

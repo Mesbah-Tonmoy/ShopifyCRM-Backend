@@ -29,6 +29,9 @@ class ACLSeeder extends Seeder
             'Roles View' => 'roles.view',
             'Roles Add' => 'roles.add',
             'Roles Edit' => 'roles.edit',
+            'Apps View' => 'apps.view',
+            'Apps Add' => 'apps.add',
+            'Apps Delete' => 'apps.delete',
         ];
 
         $permissionIds = [];
@@ -39,6 +42,9 @@ class ACLSeeder extends Seeder
             );
             $permissionIds[] = $permission->id;
         }
+        
+        // Remove permissions not in the list
+        Permission::whereNotIn('slug', $permissions)->delete();
 
         // Create Admin Role
         $adminRole = Role::updateOrCreate(

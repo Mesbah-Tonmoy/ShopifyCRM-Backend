@@ -51,6 +51,7 @@ class AppController extends Controller
         ]);
 
         try {
+            $secret = config('webhook.secret');
             // Construct sync URL
             $syncUrl = rtrim($validated['app_url'], '/') . '/api/sync-crm';
             
@@ -132,25 +133,83 @@ class AppController extends Controller
     }
 
     /**
-     * Update app
+     * Resync app data
      */
-    public function update(Request $request, App $app)
+    public function resync(App $app)
     {
-        $validated = $request->validate([
-            'app_name' => 'sometimes|required|string|max:255',
-            'app_url' => 'nullable|url|max:255',
-            'app_store_url' => 'nullable|url|max:255',
-            'icon' => 'nullable|string|max:255',
-            'last_synced' => 'nullable|date',
-        ]);
+        try {
+            // Construct sync URL
+            $syncUrl = rtrim($app->app_url, '/') . '/api/sync-crm';
+            
+            // Make GET request to the app's sync endpoint
+            $response = Http::timeout(30)->get($syncUrl);
+            
+            if (!$response->successful()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Failed to sync with app',
+                ], 400);
+            }
 
-        $app->update($validated);
+            $data = $response->json();
 
-        return response()->json([
-            'success' => true,
-            'message' => 'App updated successfully',
-            'data' => $app,
-        ]);
+            if (!isset($data['success']) || !$data['success']) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'App sync returned unsuccessful response',
+                ], 400);
+            }
+
+            // Update app
+            $appData = $data['AppData'];
+            $app->update([
+                'app_name' => $appData['title'],
+                'app_store_url' => $appData['appStoreAppUrl'] ?? null,
+                'icon' => $appData['icon']['url'] ?? null,
+                'last_synced' => now(),
+            ]);
+
+            // Sync stores/installations
+            if (isset($data['stores']) && is_array($data['stores'])) {
+                foreach ($data['stores'] as $store) {
+                    Installation::updateOrCreate(
+                        [
+                            'app_id' => $app->id,
+                            'store_url' => $store['shopDomain'],
+                        ],
+                        [
+                            'store_name' => $store['name'],
+                            'email' => $store['email'],
+                            'shop_owner_name' => null,
+                            'currency' => $store['currencyCode'],
+                            'shopify_plan' => $store['shopifyPlan'],
+                            'app_plan' => $store['appPlan'],
+                            'plan_started_at' => isset($store['planStartedAt']) ? $store['planStartedAt'] : null,
+                            'plan_expires_at' => isset($store['planExpiresAt']) ? $store['planExpiresAt'] : null,
+                            'is_active' => $store['isActive'],
+                            'install_count' => 1,
+                        ]
+                    );
+                }
+            }
+
+            // Reload app with relationships
+            $app->loadCount(['installations', 'activeInstallations']);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'App resynced successfully',
+                'data' => $app,
+            ]);
+
+        } catch (\Exception $e) {
+            Log::channel('stderr')->error('App resync error: ' . $e->getMessage());
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to resync app: ' . $e->getMessage(),
+            ], 500);
+        }
     }
 
     /**
