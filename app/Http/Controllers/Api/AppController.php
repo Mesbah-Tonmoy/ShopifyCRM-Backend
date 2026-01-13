@@ -56,7 +56,9 @@ class AppController extends Controller
             $syncUrl = rtrim($validated['app_url'], '/') . '/api/sync-crm';
             
             // Make GET request to the app's sync endpoint
-            $response = Http::timeout(30)->get($syncUrl);
+            $response = Http::timeout(30)
+                ->withToken($secret)
+                ->get($syncUrl);
             
             if (!$response->successful()) {
                 return response()->json([
@@ -100,7 +102,7 @@ class AppController extends Controller
                             'shop_owner_name' => null,
                             'currency' => $store['currencyCode'],
                             'shopify_plan' => $store['shopifyPlan'],
-                            'app_plan' => $store['appPlan'],
+                            'app_plan' => ['plan_name' => $store['appPlan']],
                             'plan_started_at' => isset($store['planStartedAt']) ? $store['planStartedAt'] : null,
                             'plan_expires_at' => isset($store['planExpiresAt']) ? $store['planExpiresAt'] : null,
                             'is_active' => $store['isActive'],
@@ -138,11 +140,14 @@ class AppController extends Controller
     public function resync(App $app)
     {
         try {
+            $secret = config('webhook.secret');
             // Construct sync URL
             $syncUrl = rtrim($app->app_url, '/') . '/api/sync-crm';
             
             // Make GET request to the app's sync endpoint
-            $response = Http::timeout(30)->get($syncUrl);
+            $response = Http::timeout(30)
+                ->withToken($secret)
+                ->get($syncUrl);
             
             if (!$response->successful()) {
                 return response()->json([
@@ -183,7 +188,7 @@ class AppController extends Controller
                             'shop_owner_name' => null,
                             'currency' => $store['currencyCode'],
                             'shopify_plan' => $store['shopifyPlan'],
-                            'app_plan' => $store['appPlan'],
+                            'app_plan' => ['plan_name' => $store['appPlan']],
                             'plan_started_at' => isset($store['planStartedAt']) ? $store['planStartedAt'] : null,
                             'plan_expires_at' => isset($store['planExpiresAt']) ? $store['planExpiresAt'] : null,
                             'is_active' => $store['isActive'],
