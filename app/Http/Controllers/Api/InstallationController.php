@@ -19,7 +19,7 @@ class InstallationController extends Controller
 
         // Filter by app
         if ($request->has('app_id')) {
-            $query->where('app_id', $request->app_id);
+            $query->where('installations.app_id', $request->app_id);
         }
 
         // Filter by active status
@@ -29,11 +29,11 @@ class InstallationController extends Controller
 
         // Filter by date range
         if ($request->has('date_from')) {
-            $query->whereDate('created_at', '>=', $request->date_from);
+            $query->whereDate('installations.created_at', '>=', $request->date_from);
         }
 
         if ($request->has('date_to')) {
-            $query->whereDate('created_at', '<=', $request->date_to);
+            $query->whereDate('installations.created_at', '<=', $request->date_to);
         }
 
         // Filter by plan name
@@ -88,7 +88,20 @@ class InstallationController extends Controller
         // Sort
         $sortBy = $request->get('sort_by', 'created_at');
         $sortOrder = $request->get('sort_order', 'desc');
-        $query->orderBy($sortBy, $sortOrder);
+
+        if ($sortBy === 'app_name') {
+            $query->join('apps', 'installations.app_id', '=', 'apps.id')
+                  ->select('installations.*')
+                  ->orderBy('apps.app_name', $sortOrder);
+        } elseif ($sortBy === 'app_plan') {
+            $query->orderByRaw("JSON_EXTRACT(app_plan, '$.plan_name') " . $sortOrder);
+        } else {
+            // Qualify other columns to avoid ambiguity with apps table
+            $qualifiedSortBy = in_array($sortBy, ['id', 'created_at', 'updated_at']) 
+                ? "installations.{$sortBy}" 
+                : $sortBy;
+            $query->orderBy($qualifiedSortBy, $sortOrder);
+        }
 
         $installations = $query->paginate($perPage);
 
