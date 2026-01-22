@@ -1,0 +1,44 @@
+image: php:8.4-cli
+
+pipelines:
+  branches:
+    master:
+      - step:
+          name: Deploy Backend
+          deployment: Production
+          trigger: manual
+          script:
+            # Step 1: Sync files (excluding heavy/sensitive folders)
+            - pipe: atlassian/rsync-deploy:0.13.0
+              variables:
+                USER: $SSH_USER
+                SERVER: $SERVER_IP
+                REMOTE_PATH: $DEPLOY_DIR
+                LOCAL_PATH: "./"
+                EXTRA_ARGS:
+                  - "--exclude=.git"
+                  - "--exclude=.env"       # Vital for security
+                  - "--exclude=storage"    # Vital to prevent deleting uploads
+                  - "--exclude=vendor"     # Correct: we install this on the server next
+                  - "--exclude=node_modules"
+                  - "--exclude=tests"
+                  - "--exclude=bitbucket-pipelines.yml"
+
+            # Step 2: Run Composer & Artisan on the server
+            - pipe: atlassian/ssh-run:0.8.1
+              variables:
+                SSH_USER: $SSH_USER
+                SERVER: $SERVER_IP
+                MODE: "command"
+                COMMAND: |
+                  set -e  # Stop script if any command fails
+                  cd "$DEPLOY_DIR"
+                  
+                  # Update dependencies
+                  composer install --no-dev --optimize-autoloader
+                  
+                  # Update database and caches
+                  php artisan migrate --force
+                  php artisan optimize:clear # Clear old cache first
+                  php artisan optimize       # Rebuild cache
+                  php artisan view:cache
