@@ -37,7 +37,7 @@ pipelines:
                   cd "$DEPLOY_DIR"
                   
                   # Update dependencies
-                  composer install --no-dev --optimize-autoloader
+                  composer install --no-dev --optimize-autoloader --no-interaction
                   
                   # Update database and caches
                   php artisan migrate --force
