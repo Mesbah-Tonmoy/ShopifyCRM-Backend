@@ -12,6 +12,7 @@ pipelines:
               variables:
                 USER: $SSH_USER
                 SERVER: $SERVER_IP
+                SSH_PORT: $SSH_PORT
                 REMOTE_PATH: $DEPLOY_DIR
                 LOCAL_PATH: "./"
                 EXTRA_ARGS:
@@ -29,6 +30,7 @@ pipelines:
               variables:
                 SSH_USER: $SSH_USER
                 SERVER: $SERVER_IP
+                PORT: $SSH_PORT
                 MODE: "command"
                 COMMAND: |
                   set -e                          # Stop script if any command fails
