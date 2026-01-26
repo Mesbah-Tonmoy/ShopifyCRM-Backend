@@ -55,7 +55,7 @@ class EmailTemplateSeeder extends Seeder
                         Email: {{email}}
                         Installation Date: {{installation_date}}',
 
-                'is_active' => true,
+                'is_active' => false,
             ],
             [
                 'app_id' => $app->id,
@@ -81,7 +81,7 @@ class EmailTemplateSeeder extends Seeder
                         Email: {{email}}
                         Uninstallation Date: {{uninstallation_date}}',
 
-                'is_active' => true,
+                'is_active' => false,
             ],
             [
                 'app_id' => $app->id,
@@ -112,7 +112,7 @@ class EmailTemplateSeeder extends Seeder
                         Email: {{email}}
                         Days Active: 7',
 
-                'is_active' => true,
+                'is_active' => false,
             ],
         ];
 

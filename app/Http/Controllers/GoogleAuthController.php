@@ -30,14 +30,12 @@ class GoogleAuthController extends Controller
                 ->first();
 
             if (!$user) {
-                // Create a new user if doesn't exist
-                $user = User::create([
-                    'name' => $googleUser->name,
-                    'email' => $googleUser->email,
-                    'google_id' => $googleUser->id,
-                    'password' => Hash::make(Str::random(24)),
-                ]);
-            } else if (!$user->google_id) {
+                // Access restricted to pre-registered users only
+                $frontendUrl = env('FRONTEND_URL', 'http://localhost:8080');
+                return redirect($frontendUrl . '/auth/callback?error=' . urlencode('Account not found. Please contact your administrator to gain access.'));
+            } 
+            
+            if (!$user->google_id) {
                 // Link Google ID if user exists by email but hasn't linked Google yet
                 $user->update(['google_id' => $googleUser->id]);
             }
