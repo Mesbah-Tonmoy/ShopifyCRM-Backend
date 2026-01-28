@@ -105,6 +105,7 @@ class AppController extends Controller
                             'app_plan' => ['plan_name' => $store['appPlan']],
                             'plan_started_at' => isset($store['planStartedAt']) ? $store['planStartedAt'] : null,
                             'plan_expires_at' => isset($store['planExpiresAt']) ? $store['planExpiresAt'] : null,
+                            'installed_at' => isset($store['installedAt']) ? $store['installedAt'] : null,
                             'is_active' => $store['isActive'],
                             'install_count' => 1,
                         ]
@@ -191,6 +192,7 @@ class AppController extends Controller
                             'app_plan' => ['plan_name' => $store['appPlan']],
                             'plan_started_at' => isset($store['planStartedAt']) ? $store['planStartedAt'] : null,
                             'plan_expires_at' => isset($store['planExpiresAt']) ? $store['planExpiresAt'] : null,
+                            'installed_at' => isset($store['installedAt']) ? $store['installedAt'] : null,
                             'is_active' => $store['isActive'],
                             'install_count' => 1,
                         ]

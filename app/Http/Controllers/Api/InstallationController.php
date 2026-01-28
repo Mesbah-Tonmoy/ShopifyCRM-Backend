@@ -149,6 +149,7 @@ class InstallationController extends Controller
             'plan_expires_at' => 'nullable|date',
             'is_active' => 'boolean',
             'install_count' => 'nullable|integer|min:1',
+            'installed_at' => 'nullable|date',
         ]);
 
         // Handle app_plan JSON structure
@@ -190,6 +191,7 @@ class InstallationController extends Controller
             'plan_expires_at' => 'nullable|date',
             'is_active' => 'boolean',
             'install_count' => 'nullable|integer|min:1',
+            'installed_at' => 'nullable|date',
         ]);
 
         // Handle app_plan JSON structure

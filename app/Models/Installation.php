@@ -24,12 +24,18 @@ class Installation extends Model
         'app_plan',
         'is_active',
         'install_count',
+        'plan_started_at',
+        'plan_expires_at',
+        'installed_at',
     ];
 
     protected $casts = [
         'app_plan'          => 'array',
         'is_active'         => 'boolean',
         'install_count'     => 'integer',
+        'plan_started_at'   => 'datetime',
+        'plan_expires_at'   => 'datetime',
+        'installed_at'      => 'datetime',
     ];
 
     public function app(): BelongsTo
