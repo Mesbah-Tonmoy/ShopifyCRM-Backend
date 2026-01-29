@@ -30,6 +30,7 @@ class WebhookController extends Controller
                 'shopify_plan' => 'nullable|string',
                 'is_shopify_plus' => 'nullable|boolean',
                 'timezone' => 'nullable|string',
+                'installed_at' => 'nullable|date',
             ]);
 
             Log::channel('stderr')->info('Installation webhook received', $validated);
@@ -56,6 +57,8 @@ class WebhookController extends Controller
                     'shop_owner_name' => $validated['shop_owner_name'] ?? null,
                     'currency' => $validated['currency_code'] ?? 'USD',
                     'shopify_plan' => $validated['shopify_plan'] ?? null,
+                    'app_plan' => ['plan_name' => 'free'],
+                    'installed_at' => $validated['installed_at'] ?? null,
                     'is_active' => true,
                 ]
             );

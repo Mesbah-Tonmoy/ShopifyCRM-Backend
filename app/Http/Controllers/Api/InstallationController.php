@@ -86,7 +86,7 @@ class InstallationController extends Controller
         }
 
         // Sort
-        $sortBy = $request->get('sort_by', 'created_at');
+        $sortBy = $request->get('sort_by', 'installed_at');
         $sortOrder = $request->get('sort_order', 'desc');
 
         if ($sortBy === 'app_name') {
