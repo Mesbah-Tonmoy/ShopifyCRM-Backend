@@ -5,6 +5,9 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\App;
 use App\Models\Installation;
+use App\Models\PricingPlan;
+use App\Models\FeatureDefinition;
+use App\Models\PlanFeature;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -17,7 +20,7 @@ class AppController extends Controller
     public function index(Request $request)
     {
         $perPage = $request->get('per_page', 15);
-        $apps = App::withCount(['installations', 'activeInstallations'])
+        $apps = App::withCount(['installations', 'activeInstallations', 'pricingPlans'])
             ->orderBy('created_at', 'desc')
             ->paginate($perPage);
 
@@ -77,16 +80,26 @@ class AppController extends Controller
             }
 
             // Create or update app
-            $appData = $data['AppData'];
+            $appData = $data['appData'] ?? $data['AppData'] ?? null;
+            if (!$appData) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'App data not found in response',
+                ], 400);
+            }
+
             $app = App::updateOrCreate(
                 ['app_url' => $validated['app_url']],
                 [
-                    'app_name' => $appData['title'],
+                    'app_name' => $appData['title'] ?? $appData['name'] ?? 'Unknown App',
                     'app_store_url' => $appData['appStoreAppUrl'] ?? null,
                     'icon' => $appData['icon']['url'] ?? null,
                     'last_synced' => now(),
                 ]
             );
+
+            // Sync pricing plan and feature definitions if returned
+            $this->syncPricingData($app, $data);
 
             // Sync stores/installations
             if (isset($data['stores']) && is_array($data['stores'])) {
@@ -167,13 +180,23 @@ class AppController extends Controller
             }
 
             // Update app
-            $appData = $data['AppData'];
+            $appData = $data['appData'] ?? $data['AppData'] ?? null;
+            if (!$appData) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'App data not found in response',
+                ], 400);
+            }
+
             $app->update([
-                'app_name' => $appData['title'],
+                'app_name' => $appData['title'] ?? $appData['name'] ?? 'Unknown App',
                 'app_store_url' => $appData['appStoreAppUrl'] ?? null,
                 'icon' => $appData['icon']['url'] ?? null,
                 'last_synced' => now(),
             ]);
+
+            // Sync pricing plan and feature definitions if returned
+            $this->syncPricingData($app, $data);
 
             // Sync stores/installations
             if (isset($data['stores']) && is_array($data['stores'])) {
@@ -233,6 +256,66 @@ class AppController extends Controller
     }
 
     /**
+     * Push pricing plans to the app
+     */
+    public function pushPlans(App $app)
+    {
+        try {
+            $secret = config('webhook.secret');
+            // Construct update-plans URL
+            $updateUrl = rtrim($app->app_url, '/') . '/api/update-plans';
+            
+            // Get all pricing plans with their features and definitions
+            $plans = PricingPlan::where('app_id', $app->id)
+                ->with(['features' => function($query) {
+                    $query->with('feature');
+                }])
+                ->get();
+
+            // Format data for the app
+            $formattedPlans = $plans->map(function($plan) {
+                return [
+                    'name' => $plan->name,
+                    'amount' => $plan->amount,
+                    'isActive' => $plan->is_active,
+                    'features' => $plan->features->map(function($pf) {
+                        return [
+                            'key' => $pf->feature->key,
+                            'value' => $pf->value,
+                        ];
+                    })->all()
+                ];
+            });
+
+            // Make POST request to the app's update-plans endpoint
+            $response = Http::timeout(30)
+                ->withToken($secret)
+                ->post($updateUrl, $formattedPlans->toArray());
+            
+            if (!$response->successful()) {
+                $errorData = $response->json();
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Failed to push plans: ' . ($errorData['message'] ?? 'App returned an error'),
+                ], $response->status());
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Pricing plans synced to app successfully',
+            ]);
+
+        } catch (\Exception $e) {
+            Log::channel('stderr')->error('App push plans error: ' . $e->getMessage());
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to push plans: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
      * Get app statistics
      */
     public function stats(App $app)
@@ -260,5 +343,93 @@ class AppController extends Controller
             'success' => true,
             'data' => $stats,
         ]);
+    }
+
+    /**
+     * Sync pricing plans and feature definitions from API response
+     */
+    private function syncPricingData(App $app, array $data): void
+    {
+        // 1. Sync Feature Definitions
+        if (isset($data['featureDefinitions']) && is_array($data['featureDefinitions'])) {
+            foreach ($data['featureDefinitions'] as $feature) {
+                FeatureDefinition::updateOrCreate(
+                    ['app_id' => $app->id, 'key' => $feature['key']],
+                    [
+                        'name' => $feature['name'],
+                        'description' => $feature['description'] ?? null,
+                        'value_type' => $feature['valueType'],
+                        'category' => $feature['category'] ?? null,
+                        'is_active' => $feature['isActive'] ?? true,
+                    ]
+                );
+            }
+        }
+
+        // 2. Sync Pricing Plans
+        if (isset($data['pricingPlan']) && is_array($data['pricingPlan'])) {
+            foreach ($data['pricingPlan'] as $plan) {
+                PricingPlan::updateOrCreate(
+                    ['app_id' => $app->id, 'name' => $plan['name']],
+                    [
+                        'display_name' => $plan['displayName'] ?? $plan['name'],
+                        'amount' => $plan['amount'],
+                        'currency_code' => $plan['currencyCode'] ?? 'USD',
+                        'interval' => $plan['interval'],
+                        'is_active' => $plan['isActive'] ?? true,
+                        'sort_order' => $plan['sortOrder'] ?? 0,
+                    ]
+                );
+            }
+        }
+
+        // 3. Sync Plan Features
+        if (isset($data['planFeatures']) && (is_array($data['planFeatures']) || is_object($data['planFeatures']))) {
+            // Convert to array if single object
+            $planFeatures = is_array($data['planFeatures']) ? $data['planFeatures'] : [$data['planFeatures']];
+            
+            // Build temporary mapping from remote IDs to local Names/Keys 
+            // since planFeatures uses remote numeric IDs
+            $remotePlanNames = [];
+            if (isset($data['pricingPlan']) && is_array($data['pricingPlan'])) {
+                foreach ($data['pricingPlan'] as $p) {
+                    $remotePlanNames[$p['id']] = $p['name'];
+                }
+            }
+
+            $remoteFeatureKeys = [];
+            if (isset($data['featureDefinitions']) && is_array($data['featureDefinitions'])) {
+                foreach ($data['featureDefinitions'] as $f) {
+                    $remoteFeatureKeys[$f['id']] = $f['key'];
+                }
+            }
+
+            foreach ($planFeatures as $pf) {
+                // Determine plan name and feature key (handle both camelCase and snake_case for safety)
+                $planName = $pf['planName'] ?? $pf['plan_name'] ?? ($remotePlanNames[$pf['planId'] ?? $pf['plan_id'] ?? null] ?? null);
+                $featureKey = $pf['featureKey'] ?? $pf['feature_key'] ?? ($remoteFeatureKeys[$pf['featureId'] ?? $pf['feature_id'] ?? null] ?? null);
+
+                if (!$planName || !$featureKey) {
+                    continue;
+                }
+
+                // Find local IDs based on the names/keys
+                $plan = PricingPlan::where('app_id', $app->id)->where('name', $planName)->first();
+                $feature = FeatureDefinition::where('app_id', $app->id)->where('key', $featureKey)->first();
+
+                if ($plan && $feature) {
+                    PlanFeature::updateOrCreate(
+                        [
+                            'app_id' => $app->id,
+                            'plan_id' => $plan->id,
+                            'feature_id' => $feature->id,
+                        ],
+                        [
+                            'value' => $pf['value']
+                        ]
+                    );
+                }
+            }
+        }
     }
 }

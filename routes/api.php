@@ -10,6 +10,7 @@ use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\RoleController;
 use App\Http\Controllers\Api\PermissionController;
 use App\Http\Controllers\Api\DashboardController;
+use App\Http\Controllers\Api\PricingPlanController;
 
 /*
 |--------------------------------------------------------------------------
@@ -43,6 +44,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/apps/{app}', [AppController::class, 'show'])->middleware('permission:apps.view');
     Route::post('/apps', [AppController::class, 'store'])->middleware('permission:apps.add');
     Route::post('/apps/{app}/resync', [AppController::class, 'resync'])->middleware('permission:apps.add');
+    Route::post('/apps/{app}/push-plans', [AppController::class, 'pushPlans'])->middleware('permission:pricing_plans.edit');
     Route::delete('/apps/{app}', [AppController::class, 'destroy'])->middleware('permission:apps.delete');
     Route::get('/apps/{app}/stats', [AppController::class, 'stats'])->middleware('permission:apps.view');
     
@@ -71,6 +73,13 @@ Route::middleware('auth:sanctum')->group(function () {
     
     // Filter email templates by app
     Route::get('/apps/{app}/email-templates', [EmailTemplateController::class, 'byApp']);
+
+    // Pricing Plans routes
+    Route::get('/pricing-plans', [PricingPlanController::class, 'index'])->middleware('permission:pricing_plans.view');
+    Route::put('/pricing-plans/{pricingPlan}', [PricingPlanController::class, 'update'])->middleware('permission:pricing_plans.edit');
+    Route::post('/pricing-plans/{pricingPlan}/toggle-active', [PricingPlanController::class, 'toggleActive'])->middleware('permission:pricing_plans.edit');
+    Route::get('/pricing-plans/{pricingPlan}/features', [PricingPlanController::class, 'features'])->middleware('permission:pricing_plans.view');
+    Route::put('/pricing-plans/{pricingPlan}/features', [PricingPlanController::class, 'updateFeatures'])->middleware('permission:pricing_plans.edit');
 
     // ACL User routes
     Route::get('/users', [UserController::class, 'index'])->middleware('permission:users.view');

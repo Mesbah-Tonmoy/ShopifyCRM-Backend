@@ -47,6 +47,14 @@ class App extends Model
     }
 
     /**
+     * Get pricing plans for the app.
+     */
+    public function pricingPlans(): HasMany
+    {
+        return $this->hasMany(PricingPlan::class, 'app_id');
+    }
+
+    /**
      * Get total installation count.
      */
     public function getTotalInstallationsAttribute(): int
