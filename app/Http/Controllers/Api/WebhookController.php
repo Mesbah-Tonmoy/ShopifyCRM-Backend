@@ -8,6 +8,7 @@ use App\Models\Installation;
 use App\Services\EmailTemplateService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use App\Events\WebhookReceived;
 
 class WebhookController extends Controller
 {
@@ -69,6 +70,9 @@ class WebhookController extends Controller
             }
 
             Log::channel('stderr')->info('Installation created/updated', ['installation_id' => $installation->id]);
+
+            // Broadcast event
+            WebhookReceived::dispatch($installation->store_url, 'install');
 
             // Send installation email
             try {
@@ -151,6 +155,9 @@ class WebhookController extends Controller
             ]);
 
             Log::channel('stderr')->info('Installation marked as inactive', ['installation_id' => $installation->id]);
+
+            // Broadcast event
+            WebhookReceived::dispatch($installation->store_url, 'uninstall');
 
             // Send uninstallation email
             try {
