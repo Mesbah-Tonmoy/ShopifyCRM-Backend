@@ -16,9 +16,11 @@ class WebhookReceived implements ShouldBroadcast
 
     public $message;
     public $type; // 'install' or 'uninstall'
+    public $shopDomain;
 
     public function __construct($shopDomain, $type)
     {
+        $this->shopDomain = $shopDomain;
         $this->type = $type;
         $this->message = "Store {$shopDomain} just {$type}ed your app!";
     }
