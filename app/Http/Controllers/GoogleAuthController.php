@@ -31,10 +31,10 @@ class GoogleAuthController extends Controller
 
             if (!$user) {
                 // Access restricted to pre-registered users only
-                $frontendUrl = env('FRONTEND_URL', 'http://localhost:8080');
+                $frontendUrl = config('services.frontend_url');
                 return redirect($frontendUrl . '/auth/callback?error=' . urlencode('Account not found. Please contact your administrator to gain access.'));
-            } 
-            
+            }
+
             if (!$user->google_id) {
                 // Link Google ID if user exists by email but hasn't linked Google yet
                 $user->update(['google_id' => $googleUser->id]);
@@ -44,12 +44,11 @@ class GoogleAuthController extends Controller
             $token = $user->createToken('auth-token')->plainTextToken;
 
             // Redirect to frontend callback URL with the token
-            // We use the FRONTEND_URL from env, defaulting to localhost for dev
-            $frontendUrl = env('FRONTEND_URL', 'http://localhost:8080');
+            $frontendUrl = config('services.frontend_url');
             return redirect($frontendUrl . '/auth/callback?token=' . $token);
 
         } catch (Exception $e) {
-            $frontendUrl = env('FRONTEND_URL', 'http://localhost:8080');
+            $frontendUrl = config('services.frontend_url');
             return redirect($frontendUrl . '/login?error=' . urlencode('Google authentication failed: ' . $e->getMessage()));
         }
     }
