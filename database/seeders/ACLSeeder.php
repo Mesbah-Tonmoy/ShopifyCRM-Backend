@@ -34,6 +34,8 @@ class ACLSeeder extends Seeder
             'Apps Delete' => 'apps.delete',
             'Pricing Plans View' => 'pricing_plans.view',
             'Pricing Plans Edit' => 'pricing_plans.edit',
+            'Integrations View' => 'integrations.view',
+            'Integrations Edit' => 'integrations.edit',
         ];
 
         $permissionIds = [];

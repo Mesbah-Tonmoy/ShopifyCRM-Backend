@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\App;
 use App\Models\Installation;
 use App\Services\EmailTemplateService;
+use App\Services\SlackService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use App\Events\WebhookReceived;
@@ -246,6 +247,30 @@ class WebhookController extends Controller
                 'installation_id' => $installation->id,
                 'new_plan' => $validated['app_plan']
             ]);
+
+            // Notify Slack of the plan change, if enabled
+            try {
+                $planName = $validated['app_plan']['plan_name'] ?? 'Unknown';
+                $status = strtoupper($validated['app_plan']['status'] ?? '');
+
+                $headingText = match ($status) {
+                    'CANCELLED' => ':x: *Plan Cancelled*',
+                    'ACTIVE' => ':tada: *New Plan Activated*',
+                    default => ':moneybag: *Plan Changed*',
+                };
+                $heading = "{$headingText} ({$app->app_name})";
+
+                (new SlackService())->sendSections(
+                    $heading,
+                    "*Plan:* {$planName}\n*Store:* {$installation->store_name} (`{$installation->store_url}`)"
+                );
+            } catch (\Exception $e) {
+                Log::channel('stderr')->error('Failed to send Slack plan-change notification', [
+                    'error' => $e->getMessage(),
+                    'installation_id' => $installation->id,
+                ]);
+                // Don't fail the webhook if Slack notification fails
+            }
 
             return response()->json([
                 'success' => true,

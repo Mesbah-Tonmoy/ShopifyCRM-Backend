@@ -11,6 +11,7 @@ use App\Http\Controllers\Api\RoleController;
 use App\Http\Controllers\Api\PermissionController;
 use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\PricingPlanController;
+use App\Http\Controllers\Api\IntegrationController;
 
 /*
 |--------------------------------------------------------------------------
@@ -80,6 +81,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/pricing-plans/{pricingPlan}/toggle-active', [PricingPlanController::class, 'toggleActive'])->middleware('permission:pricing_plans.edit');
     Route::get('/pricing-plans/{pricingPlan}/features', [PricingPlanController::class, 'features'])->middleware('permission:pricing_plans.view');
     Route::put('/pricing-plans/{pricingPlan}/features', [PricingPlanController::class, 'updateFeatures'])->middleware('permission:pricing_plans.edit');
+
+    // Integrations routes
+    Route::get('/integrations', [IntegrationController::class, 'index'])->middleware('permission:integrations.view');
+    Route::put('/integrations/{key}', [IntegrationController::class, 'update'])->middleware('permission:integrations.edit');
 
     // ACL User routes
     Route::get('/users', [UserController::class, 'index'])->middleware('permission:users.view');
