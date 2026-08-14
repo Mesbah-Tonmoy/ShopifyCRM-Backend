@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\EmailTemplate;
 use App\Models\Installation;
 use App\Models\App;
+use App\Models\Integration;
 use App\Mail\TemplateMail;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Log;
@@ -39,15 +40,36 @@ class EmailTemplateService
             // Render the template
             $rendered = $template->render($variables);
 
-            // Send the email
-            Mail::to($installation->email)->send(
-                new TemplateMail($rendered['subject'], $rendered['body'])
-            );
+            $mailable = new TemplateMail($rendered['subject'], $rendered['body']);
+            $sendgrid = $this->resolveSendgrid();
+            $mailerName = $sendgrid ? 'sendgrid_dynamic' : null;
+
+            if ($sendgrid) {
+                $mailable->from($sendgrid['from_email'], $sendgrid['from_name'] ?? null);
+
+                if (!empty($sendgrid['reply_to'])) {
+                    $mailable->replyTo($sendgrid['reply_to']);
+                }
+            }
+
+            $pending = $mailerName ? Mail::mailer($mailerName) : Mail::mailer(config('mail.default'));
+            $pending = $pending->to($installation->email);
+
+            if (!empty($sendgrid['cc'])) {
+                $pending->cc($this->parseAddressList($sendgrid['cc']));
+            }
+
+            if (!empty($sendgrid['bcc'])) {
+                $pending->bcc($this->parseAddressList($sendgrid['bcc']));
+            }
+
+            $pending->send($mailable);
 
             Log::info("Email sent successfully", [
                 'type' => $templateType,
                 'recipient' => $installation->email,
                 'installation_id' => $installation->id,
+                'via' => $mailerName ?? 'default',
             ]);
 
             return true;
@@ -61,6 +83,51 @@ class EmailTemplateService
 
             return false;
         }
+    }
+
+    /**
+     * If SendGrid is enabled and fully configured, register its SMTP mailer
+     * and return its config; otherwise return null so the caller falls back
+     * to the default mailer configured via .env.
+     *
+     * @return array|null
+     */
+    protected function resolveSendgrid(): ?array
+    {
+        $integration = Integration::findByKey('sendgrid');
+
+        if (!$integration || !$integration->is_enabled) {
+            return null;
+        }
+
+        $config = $integration->config ?? [];
+
+        if (empty($config['api_key']) || empty($config['from_email'])) {
+            Log::warning('SendGrid integration enabled but api_key or from_email is missing; falling back to default mailer');
+            return null;
+        }
+
+        config(['mail.mailers.sendgrid_dynamic' => [
+            'transport' => 'smtp',
+            'host' => 'smtp.sendgrid.net',
+            'port' => 587,
+            'encryption' => 'tls',
+            'username' => 'apikey',
+            'password' => $config['api_key'],
+        ]]);
+
+        return $config;
+    }
+
+    /**
+     * Split a comma-separated address string into an array.
+     *
+     * @param string $addresses
+     * @return array
+     */
+    protected function parseAddressList(string $addresses): array
+    {
+        return array_values(array_filter(array_map('trim', explode(',', $addresses))));
     }
 
     /**
