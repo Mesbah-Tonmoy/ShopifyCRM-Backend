@@ -55,6 +55,14 @@ class App extends Model
     }
 
     /**
+     * Get features (what's new items) for the app.
+     */
+    public function features(): HasMany
+    {
+        return $this->hasMany(Feature::class, 'app_id');
+    }
+
+    /**
      * Get total installation count.
      */
     public function getTotalInstallationsAttribute(): int

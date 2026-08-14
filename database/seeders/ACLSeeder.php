@@ -36,6 +36,10 @@ class ACLSeeder extends Seeder
             'Pricing Plans Edit' => 'pricing_plans.edit',
             'Integrations View' => 'integrations.view',
             'Integrations Edit' => 'integrations.edit',
+            'Features View' => 'features.view',
+            'Features Add' => 'features.add',
+            'Features Edit' => 'features.edit',
+            'Features Delete' => 'features.delete',
         ];
 
         $permissionIds = [];

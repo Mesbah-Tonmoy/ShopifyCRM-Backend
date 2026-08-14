@@ -12,6 +12,7 @@ use App\Http\Controllers\Api\PermissionController;
 use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\PricingPlanController;
 use App\Http\Controllers\Api\IntegrationController;
+use App\Http\Controllers\Api\FeatureController;
 
 /*
 |--------------------------------------------------------------------------
@@ -86,6 +87,18 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/integrations', [IntegrationController::class, 'index'])->middleware('permission:integrations.view');
     Route::put('/integrations/{key}', [IntegrationController::class, 'update'])->middleware('permission:integrations.edit');
 
+    // Features ("what's new") routes
+    Route::get('/features', [FeatureController::class, 'index'])->middleware('permission:features.view');
+    Route::get('/features/{feature}', [FeatureController::class, 'show'])->middleware('permission:features.view');
+    Route::post('/features', [FeatureController::class, 'store'])->middleware('permission:features.add');
+    Route::put('/features/{feature}', [FeatureController::class, 'update'])->middleware('permission:features.edit');
+    Route::delete('/features/{feature}', [FeatureController::class, 'destroy'])->middleware('permission:features.delete');
+    Route::post('/features/{feature}/toggle-published', [FeatureController::class, 'togglePublished'])->middleware('permission:features.edit');
+    Route::post('/features/{feature}/image', [FeatureController::class, 'uploadImage'])->middleware('permission:features.edit');
+
+    // Filter features by app
+    Route::get('/apps/{app}/features', [FeatureController::class, 'byApp'])->middleware('permission:features.view');
+
     // ACL User routes
     Route::get('/users', [UserController::class, 'index'])->middleware('permission:users.view');
     Route::post('/users', [UserController::class, 'store'])->middleware('permission:users.add');
@@ -113,4 +126,9 @@ Route::prefix('webhooks')->group(function () {
     Route::post('/install', [WebhookController::class, 'install']);
     Route::post('/uninstall', [WebhookController::class, 'uninstall']);
     Route::post('/plan-change', [WebhookController::class, 'planChange']);
+});
+
+// Public routes consumed by embedded Shopify apps (no auth required)
+Route::prefix('public')->group(function () {
+    Route::get('/apps/{app}/features', [FeatureController::class, 'publicByApp']);
 });
