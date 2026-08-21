@@ -42,25 +42,27 @@ class EmailTemplateService
 
             $mailable = new TemplateMail($rendered['subject'], $rendered['body']);
             $sendgrid = $this->resolveSendgrid();
-            $mailerName = $sendgrid ? 'sendgrid_dynamic' : null;
+            $mailtrap = $sendgrid ? null : $this->resolveMailtrap();
+            $provider = $sendgrid ?? $mailtrap;
+            $mailerName = $sendgrid ? 'sendgrid_dynamic' : ($mailtrap ? 'mailtrap_dynamic' : null);
 
-            if ($sendgrid) {
-                $mailable->from($sendgrid['from_email'], $sendgrid['from_name'] ?? null);
+            if ($provider) {
+                $mailable->from($provider['from_email'], $provider['from_name'] ?? null);
 
-                if (!empty($sendgrid['reply_to'])) {
-                    $mailable->replyTo($sendgrid['reply_to']);
+                if (!empty($provider['reply_to'])) {
+                    $mailable->replyTo($provider['reply_to']);
                 }
             }
 
             $pending = $mailerName ? Mail::mailer($mailerName) : Mail::mailer(config('mail.default'));
             $pending = $pending->to($installation->email);
 
-            if (!empty($sendgrid['cc'])) {
-                $pending->cc($this->parseAddressList($sendgrid['cc']));
+            if (!empty($provider['cc'])) {
+                $pending->cc($this->parseAddressList($provider['cc']));
             }
 
-            if (!empty($sendgrid['bcc'])) {
-                $pending->bcc($this->parseAddressList($sendgrid['bcc']));
+            if (!empty($provider['bcc'])) {
+                $pending->bcc($this->parseAddressList($provider['bcc']));
             }
 
             $pending->send($mailable);
@@ -114,6 +116,40 @@ class EmailTemplateService
             'encryption' => 'tls',
             'username' => 'apikey',
             'password' => $config['api_key'],
+        ]]);
+
+        return $config;
+    }
+
+    /**
+     * If Mailtrap is enabled and fully configured, register its SMTP mailer
+     * and return its config; otherwise return null so the caller falls back
+     * to the default mailer configured via .env.
+     *
+     * @return array|null
+     */
+    protected function resolveMailtrap(): ?array
+    {
+        $integration = Integration::findByKey('mailtrap');
+
+        if (!$integration || !$integration->is_enabled) {
+            return null;
+        }
+
+        $config = $integration->config ?? [];
+
+        if (empty($config['username']) || empty($config['password']) || empty($config['from_email'])) {
+            Log::warning('Mailtrap integration enabled but username, password or from_email is missing; falling back to default mailer');
+            return null;
+        }
+
+        config(['mail.mailers.mailtrap_dynamic' => [
+            'transport' => 'smtp',
+            'host' => $config['host'] ?? 'live.smtp.mailtrap.io',
+            'port' => $config['port'] ?? 587,
+            'encryption' => 'tls',
+            'username' => $config['username'],
+            'password' => $config['password'],
         ]]);
 
         return $config;
