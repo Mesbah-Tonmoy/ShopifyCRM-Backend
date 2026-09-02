@@ -59,14 +59,24 @@ class ACLSeeder extends Seeder
         // Remove permissions not in the list
         Permission::whereNotIn('slug', $permissions)->delete();
 
-        // Create Admin Role
-        $adminRole = Role::updateOrCreate(
-            ['slug' => 'admin'],
-            ['name' => 'Administrator', 'description' => 'System administrator with full access']
-        );
+        /*
+         * Roles that are meant to hold every permission.
+         *
+         * Both are synced, not just "admin": production carries a super-admin
+         * created through the roles screen, and syncing only one meant every
+         * new permission added here had to be granted to the other by hand,
+         * which was missed twice.
+         */
+        $fullAccessRoles = [
+            'admin' => ['name' => 'Administrator', 'description' => 'System administrator with full access'],
+            'super-admin' => ['name' => 'Super Administrator', 'description' => 'Unrestricted access to every feature'],
+        ];
 
-        // Sync all permissions to admin
-        $adminRole->permissions()->sync($permissionIds);
+        foreach ($fullAccessRoles as $slug => $attributes) {
+            Role::updateOrCreate(['slug' => $slug], $attributes)
+                ->permissions()
+                ->sync($permissionIds);
+        }
 
     }
 }

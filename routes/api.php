@@ -70,7 +70,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Route::get('/installations/export', [InstallationController::class, 'export'])->middleware('permission:installations.export');
     
     // Filter installations by app
-    Route::get('/apps/{app}/installations', [InstallationController::class, 'byApp']);
+    Route::get('/apps/{app}/installations', [InstallationController::class, 'byApp'])->middleware('permission:installations.view');
     
     // Email Templates routes
     Route::get('/email-templates', [EmailTemplateController::class, 'index'])->middleware('permission:email_templates.view');
@@ -82,7 +82,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/email-templates/{emailTemplate}/render', [EmailTemplateController::class, 'render'])->middleware('permission:email_templates.view');
     
     // Filter email templates by app
-    Route::get('/apps/{app}/email-templates', [EmailTemplateController::class, 'byApp']);
+    Route::get('/apps/{app}/email-templates', [EmailTemplateController::class, 'byApp'])->middleware('permission:email_templates.view');
 
     // Pricing Plans routes
     Route::get('/pricing-plans', [PricingPlanController::class, 'index'])->middleware('permission:pricing_plans.view');
