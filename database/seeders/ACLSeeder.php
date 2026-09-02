@@ -41,6 +41,10 @@ class ACLSeeder extends Seeder
             'Feature Requests Edit' => 'feature_requests.edit',
             'Feature Requests Delete' => 'feature_requests.delete',
             'Board Settings Edit' => 'board_settings.edit',
+            'Features View' => 'features.view',
+            'Features Add' => 'features.add',
+            'Features Edit' => 'features.edit',
+            'Features Delete' => 'features.delete',
         ];
 
         $permissionIds = [];

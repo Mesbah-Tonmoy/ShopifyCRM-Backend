@@ -12,6 +12,7 @@ use App\Http\Controllers\Api\PermissionController;
 use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\PricingPlanController;
 use App\Http\Controllers\Api\IntegrationController;
+use App\Http\Controllers\Api\FeatureController;
 use App\Http\Controllers\Api\BoardSettingsController;
 use App\Http\Controllers\Api\FeatureRequestController;
 use App\Http\Controllers\Api\Board\BoardCommentController;
@@ -116,6 +117,18 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/apps/{app}/board/provision', [BoardSettingsController::class, 'provision'])->middleware('permission:board_settings.edit');
     Route::post('/apps/{app}/board/rotate-secret', [BoardSettingsController::class, 'rotateSecret'])->middleware('permission:board_settings.edit');
 
+    // Features ("what's new") routes
+    Route::get('/features', [FeatureController::class, 'index'])->middleware('permission:features.view');
+    Route::get('/features/{feature}', [FeatureController::class, 'show'])->middleware('permission:features.view');
+    Route::post('/features', [FeatureController::class, 'store'])->middleware('permission:features.add');
+    Route::put('/features/{feature}', [FeatureController::class, 'update'])->middleware('permission:features.edit');
+    Route::delete('/features/{feature}', [FeatureController::class, 'destroy'])->middleware('permission:features.delete');
+    Route::post('/features/{feature}/toggle-published', [FeatureController::class, 'togglePublished'])->middleware('permission:features.edit');
+    Route::post('/features/{feature}/image', [FeatureController::class, 'uploadImage'])->middleware('permission:features.edit');
+
+    // Filter features by app
+    Route::get('/apps/{app}/features', [FeatureController::class, 'byApp'])->middleware('permission:features.view');
+
     // ACL User routes
     Route::get('/users', [UserController::class, 'index'])->middleware('permission:users.view');
     Route::post('/users', [UserController::class, 'store'])->middleware('permission:users.add');
@@ -199,4 +212,20 @@ Route::prefix('board')->group(function () {
             ->whereNumber('featureRequest')
             ->middleware('throttle:board-vote');
     });
+});
+
+/*
+|--------------------------------------------------------------------------
+| Public App Routes
+|--------------------------------------------------------------------------
+|
+| Consumed by the embedded Shopify apps themselves rather than by a merchant's
+| browser session. Open by design — a changelog is public — but throttled, so
+| the endpoint cannot be used to hammer the database.
+|
+*/
+
+Route::prefix('public')->middleware('throttle:board-read')->group(function () {
+    Route::get('/apps/{app}/features', [FeatureController::class, 'publicByApp'])
+        ->whereNumber('app');
 });

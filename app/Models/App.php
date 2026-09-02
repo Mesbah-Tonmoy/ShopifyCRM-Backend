@@ -160,6 +160,15 @@ class App extends Model
     }
 
     /**
+     * Get published "what's new" entries for the app. Separate from feature
+     * requests: an update can ship without anyone having asked for it.
+     */
+    public function features(): HasMany
+    {
+        return $this->hasMany(Feature::class, 'app_id');
+    }
+
+    /**
      * Get total installation count.
      */
     public function getTotalInstallationsAttribute(): int
