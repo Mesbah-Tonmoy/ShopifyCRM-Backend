@@ -36,6 +36,11 @@ class ACLSeeder extends Seeder
             'Pricing Plans Edit' => 'pricing_plans.edit',
             'Integrations View' => 'integrations.view',
             'Integrations Edit' => 'integrations.edit',
+            'Feature Requests View' => 'feature_requests.view',
+            'Feature Requests Add' => 'feature_requests.add',
+            'Feature Requests Edit' => 'feature_requests.edit',
+            'Feature Requests Delete' => 'feature_requests.delete',
+            'Board Settings Edit' => 'board_settings.edit',
         ];
 
         $permissionIds = [];
@@ -59,16 +64,5 @@ class ACLSeeder extends Seeder
         // Sync all permissions to admin
         $adminRole->permissions()->sync($permissionIds);
 
-        // Create a default Admin User if not exists
-        // $adminUser = User::where('email', 'admin@admin.com')->first();
-        // if (!$adminUser) {
-        //     $adminUser = User::create([
-        //         'name' => 'Admin User',
-        //         'email' => 'admin@admin.com',
-        //         'password' => bcrypt('password'),
-        //     ]);
-        // }
-        
-        // $adminUser->roles()->sync([$adminRole->id]);
     }
 }

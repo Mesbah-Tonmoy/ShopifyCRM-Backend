@@ -45,6 +45,7 @@ class EmailTemplateService
             $mailtrap = $sendgrid ? null : $this->resolveMailtrap();
             $provider = $sendgrid ?? $mailtrap;
             $mailerName = $sendgrid ? 'sendgrid_dynamic' : ($mailtrap ? 'mailtrap_dynamic' : null);
+            $providerLabel = $mailerName ?? 'default (' . config('mail.default') . ')';
 
             if ($provider) {
                 $mailable->from($provider['from_email'], $provider['from_name'] ?? null);
@@ -71,7 +72,8 @@ class EmailTemplateService
                 'type' => $templateType,
                 'recipient' => $installation->email,
                 'installation_id' => $installation->id,
-                'via' => $mailerName ?? 'default',
+                'template_id' => $template->id,
+                'via' => $providerLabel,
             ]);
 
             return true;
@@ -81,6 +83,8 @@ class EmailTemplateService
                 'error' => $e->getMessage(),
                 'type' => $templateType,
                 'installation_id' => $installation->id,
+                'recipient' => $installation->email,
+                'via' => $providerLabel ?? 'unresolved (failed before mailer selection)',
             ]);
 
             return false;
@@ -118,6 +122,8 @@ class EmailTemplateService
             'password' => $config['api_key'],
         ]]);
 
+        Log::info('SendGrid mailer resolved for outgoing email', ['from_email' => $config['from_email']]);
+
         return $config;
     }
 
@@ -151,6 +157,8 @@ class EmailTemplateService
             'username' => $config['username'],
             'password' => $config['password'],
         ]]);
+
+        Log::info('Mailtrap mailer resolved for outgoing email', ['from_email' => $config['from_email']]);
 
         return $config;
     }

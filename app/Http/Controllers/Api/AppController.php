@@ -99,6 +99,11 @@ class AppController extends Controller
             );
 
             // Sync pricing plan and feature definitions if returned
+            // Every connected app gets a feature request board straight away, so it
+            // can be embedded without a separate setup step. Idempotent: existing
+            // slugs and signing credentials are preserved.
+            $app->provisionBoard();
+
             $this->syncPricingData($app, $data);
 
             // Sync stores/installations
@@ -128,6 +133,7 @@ class AppController extends Controller
 
             // Seed default email templates for the app
             \Database\Seeders\EmailTemplateSeeder::seedTemplatesForApp($app);
+            \Database\Seeders\FeatureRequestEmailTemplateSeeder::seedTemplatesForApp($app);
 
             // Reload app with relationships
             $app->loadCount(['installations', 'activeInstallations']);
@@ -196,6 +202,11 @@ class AppController extends Controller
             ]);
 
             // Sync pricing plan and feature definitions if returned
+            // Every connected app gets a feature request board straight away, so it
+            // can be embedded without a separate setup step. Idempotent: existing
+            // slugs and signing credentials are preserved.
+            $app->provisionBoard();
+
             $this->syncPricingData($app, $data);
 
             // Sync stores/installations
