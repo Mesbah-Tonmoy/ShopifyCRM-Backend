@@ -13,6 +13,11 @@ use Illuminate\Support\Facades\Log;
 class EmailTemplateService
 {
     /**
+     * Log channel for everything email related.
+     */
+    private const LOG = 'emails';
+
+    /**
      * Send email based on template type for an installation
      *
      * @param Installation $installation
@@ -22,6 +27,24 @@ class EmailTemplateService
      */
     public function sendTemplateEmail(Installation $installation, string $templateType, array $additionalVariables = []): bool
     {
+        $context = [
+            'type' => $templateType,
+            'installation_id' => $installation->id,
+            'app_id' => $installation->app_id,
+            'store_url' => $installation->store_url,
+            'recipient' => $installation->email,
+        ];
+
+        if (empty($installation->email)) {
+            Log::channel(self::LOG)->error('Email not sent: installation has no recipient address', $context);
+
+            return false;
+        }
+
+        $startedAt = microtime(true);
+
+        Log::channel(self::LOG)->info('Sending email', $context);
+
         try {
             // Find the active template for this app and type
             $template = EmailTemplate::where('app_id', $installation->app_id)
@@ -30,9 +53,12 @@ class EmailTemplateService
                 ->first();
 
             if (!$template) {
-                Log::warning("No active template found for type: {$templateType}, app_id: {$installation->app_id}");
+                Log::channel(self::LOG)->warning('Email not sent: no active template for this type', $context);
+
                 return false;
             }
+
+            $context['template_id'] = $template->id;
 
             // Prepare variables for template rendering
             $variables = $this->prepareVariables($installation, $additionalVariables);
@@ -57,30 +83,39 @@ class EmailTemplateService
             $pending = $mailerName ? Mail::mailer($mailerName) : Mail::mailer(config('mail.default'));
             $pending = $pending->to($installation->email);
 
-            if (!empty($provider['cc'])) {
-                $pending->cc($this->parseAddressList($provider['cc']));
+            $cc = $provider['cc'] ?? null;
+            $bcc = $provider['bcc'] ?? null;
+
+            if (!empty($cc)) {
+                $pending->cc($this->parseAddressList($cc));
             }
 
-            if (!empty($provider['bcc'])) {
-                $pending->bcc($this->parseAddressList($provider['bcc']));
+            if (!empty($bcc)) {
+                $pending->bcc($this->parseAddressList($bcc));
             }
+
+            $context += [
+                'via' => $mailerName ?? config('mail.default'),
+                'subject' => $rendered['subject'],
+                'from' => $provider['from_email'] ?? config('mail.from.address'),
+                'cc' => $cc ?: null,
+                'bcc' => $bcc ?: null,
+            ];
 
             $pending->send($mailable);
 
-            Log::info("Email sent successfully", [
-                'type' => $templateType,
-                'recipient' => $installation->email,
-                'installation_id' => $installation->id,
-                'via' => $mailerName ?? 'default',
+            Log::channel(self::LOG)->info('Email sent successfully', $context + [
+                'duration_ms' => round((microtime(true) - $startedAt) * 1000, 2),
             ]);
 
             return true;
 
-        } catch (\Exception $e) {
-            Log::error("Failed to send email", [
+        } catch (\Throwable $e) {
+            Log::channel(self::LOG)->error('Failed to send email', $context + [
                 'error' => $e->getMessage(),
-                'type' => $templateType,
-                'installation_id' => $installation->id,
+                'exception' => get_class($e),
+                'at' => $e->getFile() . ':' . $e->getLine(),
+                'duration_ms' => round((microtime(true) - $startedAt) * 1000, 2),
             ]);
 
             return false;
@@ -105,7 +140,7 @@ class EmailTemplateService
         $config = $integration->config ?? [];
 
         if (empty($config['api_key']) || empty($config['from_email'])) {
-            Log::warning('SendGrid integration enabled but api_key or from_email is missing; falling back to default mailer');
+            Log::channel(self::LOG)->warning('SendGrid integration enabled but api_key or from_email is missing; falling back to default mailer');
             return null;
         }
 
@@ -139,7 +174,7 @@ class EmailTemplateService
         $config = $integration->config ?? [];
 
         if (empty($config['username']) || empty($config['password']) || empty($config['from_email'])) {
-            Log::warning('Mailtrap integration enabled but username, password or from_email is missing; falling back to default mailer');
+            Log::channel(self::LOG)->warning('Mailtrap integration enabled but username, password or from_email is missing; falling back to default mailer');
             return null;
         }
 

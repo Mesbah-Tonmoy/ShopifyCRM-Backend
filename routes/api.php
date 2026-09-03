@@ -109,8 +109,17 @@ Route::middleware('auth:sanctum')->group(function () {
 });
 
 // Webhook routes (public, no auth required)
-Route::prefix('webhooks')->group(function () {
+Route::prefix('webhooks')->middleware('log.webhook')->group(function () {
+    // Reachability check for the app side: confirms a base URL really points
+    // at this API before webhooks are pointed at it.
+    Route::get('/ping', [WebhookController::class, 'ping']);
+
     Route::post('/install', [WebhookController::class, 'install']);
     Route::post('/uninstall', [WebhookController::class, 'uninstall']);
     Route::post('/plan-change', [WebhookController::class, 'planChange']);
+
+    // Anything else landing under /api/webhooks/* - wrong HTTP method or an
+    // endpoint that doesn't exist - is answered by the controller so the
+    // attempt is logged in full instead of dying as a bare 404/405.
+    Route::any('/{path?}', [WebhookController::class, 'unhandled'])->where('path', '.*');
 });

@@ -65,6 +65,44 @@ return [
             'replace_placeholders' => true,
         ],
 
+        /*
+        | Everything that happens on the inbound webhook endpoints
+        | (/api/webhooks/*): the request itself, the decisions taken while
+        | handling it and the response that went back to the Shopify app.
+        | Written to a rotating file so it survives container restarts, and
+        | mirrored to stderr so it still shows up in `docker compose logs`.
+        */
+        'webhooks' => [
+            'driver' => 'stack',
+            'channels' => ['webhooks_file', 'stderr'],
+            'ignore_exceptions' => false,
+        ],
+
+        'webhooks_file' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/webhooks.log'),
+            'level' => env('LOG_LEVEL', 'debug'),
+            'days' => (int) env('LOG_WEBHOOKS_DAYS', 30),
+            'replace_placeholders' => true,
+        ],
+
+        /*
+        | Outgoing transactional email (install / uninstall / follow-up).
+        */
+        'emails' => [
+            'driver' => 'stack',
+            'channels' => ['emails_file', 'stderr'],
+            'ignore_exceptions' => false,
+        ],
+
+        'emails_file' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/emails.log'),
+            'level' => env('LOG_LEVEL', 'debug'),
+            'days' => (int) env('LOG_EMAILS_DAYS', 30),
+            'replace_placeholders' => true,
+        ],
+
         'daily' => [
             'driver' => 'daily',
             'path' => storage_path('logs/laravel.log'),

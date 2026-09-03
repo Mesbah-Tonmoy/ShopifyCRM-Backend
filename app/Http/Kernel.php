@@ -66,6 +66,7 @@ class Kernel extends HttpKernel
         'verified' => \Illuminate\Auth\Middleware\EnsureEmailIsVerified::class,
 
         'verify.webhook' => \App\Http\Middleware\VerifyWebhookSignature::class,
+        'log.webhook' => \App\Http\Middleware\LogWebhookRequest::class,
         'permission' => \App\Http\Middleware\CheckPermission::class,
     ];
 }
