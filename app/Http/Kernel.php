@@ -68,5 +68,6 @@ class Kernel extends HttpKernel
         'verify.webhook' => \App\Http\Middleware\VerifyWebhookSignature::class,
         'log.webhook' => \App\Http\Middleware\LogWebhookRequest::class,
         'permission' => \App\Http\Middleware\CheckPermission::class,
+        'board.session' => \App\Http\Middleware\ResolveBoardSession::class,
     ];
 }

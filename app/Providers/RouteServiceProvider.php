@@ -28,6 +28,24 @@ class RouteServiceProvider extends ServiceProvider
             return Limit::perMinute(60)->by($request->user()?->id ?: $request->ip());
         });
 
+        // Public board limits. Reads are generous, writes are throttled per
+        // store so a single shop cannot flood a board.
+        RateLimiter::for('board-read', function (Request $request) {
+            return Limit::perMinute(120)->by($request->ip());
+        });
+
+        RateLimiter::for('board-session', function (Request $request) {
+            return Limit::perMinute(30)->by($request->ip());
+        });
+
+        RateLimiter::for('board-vote', function (Request $request) {
+            return Limit::perMinute(30)->by($this->boardVoterKey($request));
+        });
+
+        RateLimiter::for('board-submit', function (Request $request) {
+            return Limit::perMinute(5)->by($this->boardVoterKey($request));
+        });
+
         $this->routes(function () {
             Route::middleware('api')
                 ->prefix('api')
@@ -36,5 +54,16 @@ class RouteServiceProvider extends ServiceProvider
             Route::middleware('web')
                 ->group(base_path('routes/web.php'));
         });
+    }
+
+    /**
+     * Throttle board writes by the verified store where one is present, so a
+     * shared office IP does not rate-limit unrelated merchants.
+     */
+    protected function boardVoterKey(Request $request): string
+    {
+        $identity = \App\Http\Middleware\ResolveBoardSession::identity($request);
+
+        return $identity?->voterKey ?: $request->ip();
     }
 }

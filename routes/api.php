@@ -12,6 +12,15 @@ use App\Http\Controllers\Api\PermissionController;
 use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\PricingPlanController;
 use App\Http\Controllers\Api\IntegrationController;
+use App\Http\Controllers\Api\FeatureController;
+use App\Http\Controllers\Api\BoardSettingsController;
+use App\Http\Controllers\Api\FeatureRequestController;
+use App\Http\Controllers\Api\Board\BoardCommentController;
+use App\Http\Controllers\Api\Board\BoardController;
+use App\Http\Controllers\Api\Board\BoardRequestController;
+use App\Http\Controllers\Api\Board\BoardSessionController;
+use App\Http\Controllers\Api\Board\BoardSubscriptionController;
+use App\Http\Controllers\Api\Board\BoardVoteController;
 
 /*
 |--------------------------------------------------------------------------
@@ -61,7 +70,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Route::get('/installations/export', [InstallationController::class, 'export'])->middleware('permission:installations.export');
     
     // Filter installations by app
-    Route::get('/apps/{app}/installations', [InstallationController::class, 'byApp']);
+    Route::get('/apps/{app}/installations', [InstallationController::class, 'byApp'])->middleware('permission:installations.view');
     
     // Email Templates routes
     Route::get('/email-templates', [EmailTemplateController::class, 'index'])->middleware('permission:email_templates.view');
@@ -73,7 +82,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/email-templates/{emailTemplate}/render', [EmailTemplateController::class, 'render'])->middleware('permission:email_templates.view');
     
     // Filter email templates by app
-    Route::get('/apps/{app}/email-templates', [EmailTemplateController::class, 'byApp']);
+    Route::get('/apps/{app}/email-templates', [EmailTemplateController::class, 'byApp'])->middleware('permission:email_templates.view');
 
     // Pricing Plans routes
     Route::get('/pricing-plans', [PricingPlanController::class, 'index'])->middleware('permission:pricing_plans.view');
@@ -85,6 +94,40 @@ Route::middleware('auth:sanctum')->group(function () {
     // Integrations routes
     Route::get('/integrations', [IntegrationController::class, 'index'])->middleware('permission:integrations.view');
     Route::put('/integrations/{key}', [IntegrationController::class, 'update'])->middleware('permission:integrations.edit');
+
+    // Feature request routes
+    Route::get('/feature-requests', [FeatureRequestController::class, 'index'])->middleware('permission:feature_requests.view');
+    Route::get('/feature-requests/stats', [FeatureRequestController::class, 'stats'])->middleware('permission:feature_requests.view');
+    Route::post('/feature-requests', [FeatureRequestController::class, 'store'])->middleware('permission:feature_requests.add');
+    Route::post('/feature-requests/bulk-status', [FeatureRequestController::class, 'bulkStatus'])->middleware('permission:feature_requests.edit');
+    Route::get('/feature-requests/{featureRequest}', [FeatureRequestController::class, 'show'])->middleware('permission:feature_requests.view');
+    Route::put('/feature-requests/{featureRequest}', [FeatureRequestController::class, 'update'])->middleware('permission:feature_requests.edit');
+    Route::post('/feature-requests/{featureRequest}/status', [FeatureRequestController::class, 'changeStatus'])->middleware('permission:feature_requests.edit');
+    Route::delete('/feature-requests/{featureRequest}', [FeatureRequestController::class, 'destroy'])->middleware('permission:feature_requests.delete');
+    Route::post('/feature-requests/{featureRequest}/comments', [FeatureRequestController::class, 'addComment'])->middleware('permission:feature_requests.edit');
+    Route::put('/feature-request-comments/{comment}', [FeatureRequestController::class, 'updateComment'])->middleware('permission:feature_requests.edit');
+    Route::delete('/feature-request-comments/{comment}', [FeatureRequestController::class, 'deleteComment'])->middleware('permission:feature_requests.delete');
+
+    // Filter feature requests by app
+    Route::get('/apps/{app}/feature-requests', [FeatureRequestController::class, 'byApp'])->middleware('permission:feature_requests.view');
+
+    // Board settings routes
+    Route::get('/apps/{app}/board', [BoardSettingsController::class, 'show'])->middleware('permission:board_settings.edit');
+    Route::put('/apps/{app}/board', [BoardSettingsController::class, 'update'])->middleware('permission:board_settings.edit');
+    Route::post('/apps/{app}/board/provision', [BoardSettingsController::class, 'provision'])->middleware('permission:board_settings.edit');
+    Route::post('/apps/{app}/board/rotate-secret', [BoardSettingsController::class, 'rotateSecret'])->middleware('permission:board_settings.edit');
+
+    // Features ("what's new") routes
+    Route::get('/features', [FeatureController::class, 'index'])->middleware('permission:features.view');
+    Route::get('/features/{feature}', [FeatureController::class, 'show'])->middleware('permission:features.view');
+    Route::post('/features', [FeatureController::class, 'store'])->middleware('permission:features.add');
+    Route::put('/features/{feature}', [FeatureController::class, 'update'])->middleware('permission:features.edit');
+    Route::delete('/features/{feature}', [FeatureController::class, 'destroy'])->middleware('permission:features.delete');
+    Route::post('/features/{feature}/toggle-published', [FeatureController::class, 'togglePublished'])->middleware('permission:features.edit');
+    Route::post('/features/{feature}/image', [FeatureController::class, 'uploadImage'])->middleware('permission:features.edit');
+
+    // Filter features by app
+    Route::get('/apps/{app}/features', [FeatureController::class, 'byApp'])->middleware('permission:features.view');
 
     // ACL User routes
     Route::get('/users', [UserController::class, 'index'])->middleware('permission:users.view');
@@ -122,4 +165,76 @@ Route::prefix('webhooks')->middleware('log.webhook')->group(function () {
     // endpoint that doesn't exist - is answered by the controller so the
     // attempt is logged in full instead of dying as a bare 404/405.
     Route::any('/{path?}', [WebhookController::class, 'unhandled'])->where('path', '.*');
+});
+
+/*
+|--------------------------------------------------------------------------
+| Public Board Routes
+|--------------------------------------------------------------------------
+|
+| Consumed by the merchant-facing feature request board embedded in each
+| Shopify app. Reads stay open so the roadmap is publicly browsable; writes
+| require a session minted from an HMAC-signed token, which is what ties a
+| vote to a verified store.
+|
+*/
+
+Route::prefix('board')->group(function () {
+    Route::post('/session', [BoardSessionController::class, 'store'])
+        ->middleware('throttle:board-session');
+
+    // Reads: open to anyone, personalised when a session is supplied.
+    Route::middleware(['board.session:optional', 'throttle:board-read'])->group(function () {
+        Route::get('/{app:board_slug}/config', [BoardController::class, 'config']);
+        Route::get('/{app:board_slug}/requests', [BoardRequestController::class, 'index']);
+        Route::get('/{app:board_slug}/roadmap', [BoardRequestController::class, 'roadmap']);
+        Route::get('/{app:board_slug}/requests/{featureRequest}/comments', [BoardCommentController::class, 'index'])
+            ->whereNumber('featureRequest');
+    });
+
+    // Writes: a verified store is mandatory. The session middleware runs first
+    // so the throttles below can key on the store rather than the IP.
+    Route::middleware('board.session')->group(function () {
+        Route::get('/{app:board_slug}/me', [BoardController::class, 'me'])
+            ->middleware('throttle:board-read');
+
+        Route::post('/{app:board_slug}/requests', [BoardRequestController::class, 'store'])
+            ->middleware('throttle:board-submit');
+
+        Route::post('/{app:board_slug}/requests/{featureRequest}/comments', [BoardCommentController::class, 'store'])
+            ->whereNumber('featureRequest')
+            ->middleware('throttle:board-submit');
+
+        Route::post('/{app:board_slug}/requests/{featureRequest}/subscribe', [BoardSubscriptionController::class, 'store'])
+            ->whereNumber('featureRequest')
+            ->middleware('throttle:board-vote');
+
+        Route::delete('/{app:board_slug}/requests/{featureRequest}/subscribe', [BoardSubscriptionController::class, 'destroy'])
+            ->whereNumber('featureRequest')
+            ->middleware('throttle:board-vote');
+
+        Route::post('/{app:board_slug}/requests/{featureRequest}/vote', [BoardVoteController::class, 'store'])
+            ->whereNumber('featureRequest')
+            ->middleware('throttle:board-vote');
+
+        Route::delete('/{app:board_slug}/requests/{featureRequest}/vote', [BoardVoteController::class, 'destroy'])
+            ->whereNumber('featureRequest')
+            ->middleware('throttle:board-vote');
+    });
+});
+
+/*
+|--------------------------------------------------------------------------
+| Public App Routes
+|--------------------------------------------------------------------------
+|
+| Consumed by the embedded Shopify apps themselves rather than by a merchant's
+| browser session. Open by design — a changelog is public — but throttled, so
+| the endpoint cannot be used to hammer the database.
+|
+*/
+
+Route::prefix('public')->middleware('throttle:board-read')->group(function () {
+    Route::get('/apps/{app}/features', [FeatureController::class, 'publicByApp'])
+        ->whereNumber('app');
 });

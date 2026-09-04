@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Installation extends Model
 {
@@ -45,6 +46,22 @@ class Installation extends Model
     public function app(): BelongsTo
     {
         return $this->belongsTo(App::class, 'app_id');
+    }
+
+    /**
+     * Feature requests submitted by this store.
+     */
+    public function featureRequests(): HasMany
+    {
+        return $this->hasMany(FeatureRequest::class, 'installation_id');
+    }
+
+    /**
+     * Board votes cast by this store.
+     */
+    public function featureRequestVotes(): HasMany
+    {
+        return $this->hasMany(FeatureRequestVote::class, 'installation_id');
     }
 
     /**

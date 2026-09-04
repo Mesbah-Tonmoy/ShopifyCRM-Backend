@@ -36,6 +36,15 @@ class ACLSeeder extends Seeder
             'Pricing Plans Edit' => 'pricing_plans.edit',
             'Integrations View' => 'integrations.view',
             'Integrations Edit' => 'integrations.edit',
+            'Feature Requests View' => 'feature_requests.view',
+            'Feature Requests Add' => 'feature_requests.add',
+            'Feature Requests Edit' => 'feature_requests.edit',
+            'Feature Requests Delete' => 'feature_requests.delete',
+            'Board Settings Edit' => 'board_settings.edit',
+            'Features View' => 'features.view',
+            'Features Add' => 'features.add',
+            'Features Edit' => 'features.edit',
+            'Features Delete' => 'features.delete',
         ];
 
         $permissionIds = [];
@@ -50,25 +59,24 @@ class ACLSeeder extends Seeder
         // Remove permissions not in the list
         Permission::whereNotIn('slug', $permissions)->delete();
 
-        // Create Admin Role
-        $adminRole = Role::updateOrCreate(
-            ['slug' => 'admin'],
-            ['name' => 'Administrator', 'description' => 'System administrator with full access']
-        );
+        /*
+         * Roles that are meant to hold every permission.
+         *
+         * Both are synced, not just "admin": production carries a super-admin
+         * created through the roles screen, and syncing only one meant every
+         * new permission added here had to be granted to the other by hand,
+         * which was missed twice.
+         */
+        $fullAccessRoles = [
+            'admin' => ['name' => 'Administrator', 'description' => 'System administrator with full access'],
+            'super-admin' => ['name' => 'Super Administrator', 'description' => 'Unrestricted access to every feature'],
+        ];
 
-        // Sync all permissions to admin
-        $adminRole->permissions()->sync($permissionIds);
+        foreach ($fullAccessRoles as $slug => $attributes) {
+            Role::updateOrCreate(['slug' => $slug], $attributes)
+                ->permissions()
+                ->sync($permissionIds);
+        }
 
-        // Create a default Admin User if not exists
-        // $adminUser = User::where('email', 'admin@admin.com')->first();
-        // if (!$adminUser) {
-        //     $adminUser = User::create([
-        //         'name' => 'Admin User',
-        //         'email' => 'admin@admin.com',
-        //         'password' => bcrypt('password'),
-        //     ]);
-        // }
-        
-        // $adminUser->roles()->sync([$adminRole->id]);
     }
 }
