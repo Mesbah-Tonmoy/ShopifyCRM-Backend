@@ -8,9 +8,16 @@ return new class extends Migration
 {
     /**
      * Run the migrations.
+     *
+     * The table predates this migration on servers where it was created by
+     * hand, so guard the create rather than let the deploy die on a 1050.
      */
     public function up(): void
     {
+        if (Schema::hasTable('jobs')) {
+            return;
+        }
+
         Schema::create('jobs', function (Blueprint $table) {
             $table->bigIncrements('id');
             $table->string('queue')->index();
