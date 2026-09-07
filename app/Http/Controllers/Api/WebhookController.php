@@ -139,6 +139,11 @@ class WebhookController extends Controller
                 $attributes
             );
 
+            if ($installation->wasRecentlyCreated && empty($installation->installed_at)) {
+                $installation->installed_at = $validated['installed_at'] ?? now();
+                $installation->save();
+            }
+
             // Count real reinstalls only. Counting every inbound webhook (the
             // previous behaviour) inflated install_count on every retry.
             if ($isReinstall) {
