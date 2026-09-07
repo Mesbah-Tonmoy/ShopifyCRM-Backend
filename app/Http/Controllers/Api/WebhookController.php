@@ -60,10 +60,14 @@ class WebhookController extends Controller
                     'currency' => $validated['currency_code'] ?? 'USD',
                     'shopify_plan' => $validated['shopify_plan'] ?? null,
                     'app_plan' => ['plan_name' => 'Free'],
-                    'installed_at' => $validated['installed_at'] ?? null,
                     'is_active' => true,
                 ]
             );
+
+            if ($installation->wasRecentlyCreated && empty($installation->installed_at)) {
+                $installation->installed_at = $validated['installed_at'] ?? now();
+                $installation->save();
+            }
 
             // Increment install count if it's a reinstall
             if ($installation->wasRecentlyCreated === false) {
