@@ -12,6 +12,7 @@ use App\Http\Controllers\Api\PermissionController;
 use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\PricingPlanController;
 use App\Http\Controllers\Api\IntegrationController;
+use App\Http\Controllers\Api\MailProviderController;
 use App\Http\Controllers\Api\FeatureController;
 use App\Http\Controllers\Api\BoardSettingsController;
 use App\Http\Controllers\Api\FeatureRequestController;
@@ -94,6 +95,15 @@ Route::middleware('auth:sanctum')->group(function () {
     // Integrations routes
     Route::get('/integrations', [IntegrationController::class, 'index'])->middleware('permission:integrations.view');
     Route::put('/integrations/{key}', [IntegrationController::class, 'update'])->middleware('permission:integrations.edit');
+
+    // Email providers for the CRM's own mail (SendGrid, Mailtrap, Amazon SES), one active at a time.
+    Route::get('/integrations/mail-providers', [MailProviderController::class, 'index'])->middleware('permission:integrations.view');
+    Route::post('/integrations/mail-providers/deactivate', [MailProviderController::class, 'deactivate'])->middleware('permission:integrations.edit');
+    Route::get('/integrations/mail-providers/ses/tenant', [MailProviderController::class, 'sesTenant'])->middleware('permission:integrations.view');
+    Route::post('/integrations/mail-providers/ses/tenant', [MailProviderController::class, 'provisionSesTenant'])->middleware('permission:integrations.edit');
+    Route::put('/integrations/mail-providers/{key}', [MailProviderController::class, 'update'])->middleware('permission:integrations.edit');
+    Route::post('/integrations/mail-providers/{key}/activate', [MailProviderController::class, 'activate'])->middleware('permission:integrations.edit');
+    Route::post('/integrations/mail-providers/{key}/test', [MailProviderController::class, 'test'])->middleware('permission:integrations.edit');
 
     // Feature request routes
     Route::get('/feature-requests', [FeatureRequestController::class, 'index'])->middleware('permission:feature_requests.view');

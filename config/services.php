@@ -31,6 +31,16 @@ return [
         'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
     ],
 
+    /*
+     * The SES tenant the CRM's own mail is sent under when Amazon SES is the
+     * active provider. One per environment, so local and production never share
+     * reputation or sending status. Credentials live on the Integrations page.
+     */
+    'ses_tenant' => [
+        'name' => env('SES_TENANT_NAME') ?: 'shopify-crm-' . env('APP_ENV', 'production'),
+        'explicit' => filled(env('SES_TENANT_NAME')),
+    ],
+
     'google' => [
         'client_id' => env('GOOGLE_CLIENT_ID'),
         'client_secret' => env('GOOGLE_CLIENT_SECRET'),

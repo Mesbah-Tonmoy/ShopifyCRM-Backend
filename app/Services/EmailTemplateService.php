@@ -5,13 +5,20 @@ namespace App\Services;
 use App\Models\EmailTemplate;
 use App\Models\Installation;
 use App\Models\App;
-use App\Models\Integration;
 use App\Mail\TemplateMail;
+use App\Services\Mail\MailProviderRegistry;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Log;
 
 class EmailTemplateService
 {
+    protected MailProviderRegistry $mailProviders;
+
+    public function __construct(?MailProviderRegistry $mailProviders = null)
+    {
+        $this->mailProviders = $mailProviders ?? app(MailProviderRegistry::class);
+    }
+
     /**
      * Send email based on template type for an installation
      *
@@ -22,29 +29,61 @@ class EmailTemplateService
      */
     public function sendTemplateEmail(Installation $installation, string $templateType, array $additionalVariables = []): bool
     {
+        return $this->sendTemplate(
+            (int) $installation->app_id,
+            (string) $installation->email,
+            $templateType,
+            $this->prepareVariables($installation, $additionalVariables),
+            ['installation_id' => $installation->id],
+        );
+    }
+
+    /**
+     * Send a template to any address on behalf of an app.
+     *
+     * Split out of sendTemplateEmail() because not every board email goes to a
+     * store: the heads-up about a new request goes to whoever the board names,
+     * who may have no installation record at all. The installation-shaped
+     * variables are the caller's job, so this knows only about an app, an
+     * address and a template.
+     *
+     * @param  array<string, mixed>  $variables
+     * @param  array<string, mixed>  $context  Extra fields for the log lines.
+     */
+    public function sendTemplate(
+        int $appId,
+        string $recipient,
+        string $templateType,
+        array $variables = [],
+        array $context = [],
+    ): bool {
+        $logContext = array_merge(['type' => $templateType, 'recipient' => $recipient], $context);
+
+        if (blank($recipient)) {
+            Log::warning('No recipient for template email', $logContext);
+
+            return false;
+        }
+
         try {
             // Find the active template for this app and type
-            $template = EmailTemplate::where('app_id', $installation->app_id)
+            $template = EmailTemplate::where('app_id', $appId)
                 ->where('type', $templateType)
                 ->where('is_active', true)
                 ->first();
 
             if (!$template) {
-                Log::warning("No active template found for type: {$templateType}, app_id: {$installation->app_id}");
+                Log::warning("No active template found for type: {$templateType}, app_id: {$appId}");
                 return false;
             }
-
-            // Prepare variables for template rendering
-            $variables = $this->prepareVariables($installation, $additionalVariables);
 
             // Render the template
             $rendered = $template->render($variables);
 
             $mailable = new TemplateMail($rendered['subject'], $rendered['body']);
-            $sendgrid = $this->resolveSendgrid();
-            $mailtrap = $sendgrid ? null : $this->resolveMailtrap();
-            $provider = $sendgrid ?? $mailtrap;
-            $mailerName = $sendgrid ? 'sendgrid_dynamic' : ($mailtrap ? 'mailtrap_dynamic' : null);
+            $resolved = $this->mailProviders->resolveActive();
+            $provider = $resolved?->config;
+            $mailerName = $resolved?->mailer;
             $providerLabel = $mailerName ?? 'default (' . config('mail.default') . ')';
 
             if ($provider) {
@@ -55,8 +94,17 @@ class EmailTemplateService
                 }
             }
 
+            if ($resolved?->headers) {
+                $headers = $resolved->headers;
+                $mailable->withSymfonyMessage(function ($message) use ($headers) {
+                    foreach ($headers as $name => $value) {
+                        $message->getHeaders()->addTextHeader($name, $value);
+                    }
+                });
+            }
+
             $pending = $mailerName ? Mail::mailer($mailerName) : Mail::mailer(config('mail.default'));
-            $pending = $pending->to($installation->email);
+            $pending = $pending->to($recipient);
 
             if (!empty($provider['cc'])) {
                 $pending->cc($this->parseAddressList($provider['cc']));
@@ -68,99 +116,22 @@ class EmailTemplateService
 
             $pending->send($mailable);
 
-            Log::info("Email sent successfully", [
-                'type' => $templateType,
-                'recipient' => $installation->email,
-                'installation_id' => $installation->id,
+            Log::info("Email sent successfully", array_merge($logContext, array_filter([
                 'template_id' => $template->id,
                 'via' => $providerLabel,
-            ]);
+                'ses_tenant' => $resolved?->tenant,
+            ])));
 
             return true;
 
         } catch (\Exception $e) {
-            Log::error("Failed to send email", [
+            Log::error("Failed to send email", array_merge($logContext, [
                 'error' => $e->getMessage(),
-                'type' => $templateType,
-                'installation_id' => $installation->id,
-                'recipient' => $installation->email,
                 'via' => $providerLabel ?? 'unresolved (failed before mailer selection)',
-            ]);
+            ]));
 
             return false;
         }
-    }
-
-    /**
-     * If SendGrid is enabled and fully configured, register its SMTP mailer
-     * and return its config; otherwise return null so the caller falls back
-     * to the default mailer configured via .env.
-     *
-     * @return array|null
-     */
-    protected function resolveSendgrid(): ?array
-    {
-        $integration = Integration::findByKey('sendgrid');
-
-        if (!$integration || !$integration->is_enabled) {
-            return null;
-        }
-
-        $config = $integration->config ?? [];
-
-        if (empty($config['api_key']) || empty($config['from_email'])) {
-            Log::warning('SendGrid integration enabled but api_key or from_email is missing; falling back to default mailer');
-            return null;
-        }
-
-        config(['mail.mailers.sendgrid_dynamic' => [
-            'transport' => 'smtp',
-            'host' => 'smtp.sendgrid.net',
-            'port' => 587,
-            'encryption' => 'tls',
-            'username' => 'apikey',
-            'password' => $config['api_key'],
-        ]]);
-
-        Log::info('SendGrid mailer resolved for outgoing email', ['from_email' => $config['from_email']]);
-
-        return $config;
-    }
-
-    /**
-     * If Mailtrap is enabled and fully configured, register its SMTP mailer
-     * and return its config; otherwise return null so the caller falls back
-     * to the default mailer configured via .env.
-     *
-     * @return array|null
-     */
-    protected function resolveMailtrap(): ?array
-    {
-        $integration = Integration::findByKey('mailtrap');
-
-        if (!$integration || !$integration->is_enabled) {
-            return null;
-        }
-
-        $config = $integration->config ?? [];
-
-        if (empty($config['username']) || empty($config['password']) || empty($config['from_email'])) {
-            Log::warning('Mailtrap integration enabled but username, password or from_email is missing; falling back to default mailer');
-            return null;
-        }
-
-        config(['mail.mailers.mailtrap_dynamic' => [
-            'transport' => 'smtp',
-            'host' => $config['host'] ?? 'live.smtp.mailtrap.io',
-            'port' => $config['port'] ?? 587,
-            'encryption' => 'tls',
-            'username' => $config['username'],
-            'password' => $config['password'],
-        ]]);
-
-        Log::info('Mailtrap mailer resolved for outgoing email', ['from_email' => $config['from_email']]);
-
-        return $config;
     }
 
     /**
