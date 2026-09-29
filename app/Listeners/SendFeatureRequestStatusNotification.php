@@ -41,6 +41,16 @@ class SendFeatureRequestStatusNotification implements ShouldQueue
             return;
         }
 
+        /*
+         * Approval is only an event worth announcing where requests are held
+         * for review. On an open board a request is public the moment it is
+         * submitted, so "approved" marks nothing the merchant can see. Opt-in
+         * even then, via the board's own setting.
+         */
+        if ($status === FeatureRequestStatus::Approved && ! $board->announcesApprovals()) {
+            return;
+        }
+
         $recipients = $this->recipients($request, $status);
 
         if ($recipients->isEmpty()) {

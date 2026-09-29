@@ -5,14 +5,16 @@ namespace Database\Seeders;
 use App\Enums\FeatureRequestStatus;
 use App\Models\App;
 use App\Models\EmailTemplate;
+use App\Models\FeatureBoard;
 use Illuminate\Database\Seeder;
 
 /**
  * Default wording for the board's status emails.
  *
- * Types come from FeatureRequestStatus::templateType(), so the enum stays the
- * single source of truth and a renamed status cannot leave an orphaned
- * template behind.
+ * Status types come from FeatureRequestStatus::templateType(), so the enum
+ * stays the single source of truth and a renamed status cannot leave an
+ * orphaned template behind. The new-request heads-up belongs to no status, so
+ * it is keyed by its own constant on FeatureBoard.
  */
 class FeatureRequestEmailTemplateSeeder extends Seeder
 {
@@ -23,15 +25,12 @@ class FeatureRequestEmailTemplateSeeder extends Seeder
 
     public static function seedTemplatesForApp(App $app): void
     {
-        foreach (static::templates() as $status => $template) {
+        foreach (static::templates() as $type => $template) {
             EmailTemplate::updateOrCreate(
+                ['app_id' => $app->id, 'type' => $type],
                 [
                     'app_id' => $app->id,
-                    'type' => FeatureRequestStatus::from($status)->templateType(),
-                ],
-                [
-                    'app_id' => $app->id,
-                    'type' => FeatureRequestStatus::from($status)->templateType(),
+                    'type' => $type,
                     'subject' => $template['subject'],
                     'body' => $template['body'],
                     'is_active' => true,
@@ -46,7 +45,7 @@ class FeatureRequestEmailTemplateSeeder extends Seeder
     protected static function templates(): array
     {
         return [
-            FeatureRequestStatus::Pending->value => [
+            FeatureRequestStatus::Pending->templateType() => [
                 'subject' => 'We got your request: {{request_title}}',
                 'body' => "Hi {{store_name}},\n\n"
                     . "Thanks for suggesting \"{{request_title}}\" for {{app_name}}.\n\n"
@@ -56,7 +55,7 @@ class FeatureRequestEmailTemplateSeeder extends Seeder
                     . "Thanks for helping shape {{app_name}}.\n\n"
                     . "The {{app_name}} team",
             ],
-            FeatureRequestStatus::Approved->value => [
+            FeatureRequestStatus::Approved->templateType() => [
                 'subject' => "We're taking on: {{request_title}}",
                 'body' => "Hi {{store_name}},\n\n"
                     . "Good news — \"{{request_title}}\" has been approved and is queued for a future release.\n\n"
@@ -64,7 +63,7 @@ class FeatureRequestEmailTemplateSeeder extends Seeder
                     . "Follow it here: {{board_url}}\n\n"
                     . "The {{app_name}} team",
             ],
-            FeatureRequestStatus::InProgress->value => [
+            FeatureRequestStatus::InProgress->templateType() => [
                 'subject' => "We've started building: {{request_title}}",
                 'body' => "Hi {{store_name}},\n\n"
                     . "You asked for \"{{request_title}}\" — we're building it now.\n\n"
@@ -73,7 +72,7 @@ class FeatureRequestEmailTemplateSeeder extends Seeder
                     . "Track it here: {{board_url}}\n\n"
                     . "The {{app_name}} team",
             ],
-            FeatureRequestStatus::Completed->value => [
+            FeatureRequestStatus::Completed->templateType() => [
                 'subject' => "It's live: {{request_title}}",
                 'body' => "Hi {{store_name}},\n\n"
                     . "\"{{request_title}}\" has shipped and is available in {{app_name}} now.\n\n"
@@ -82,7 +81,7 @@ class FeatureRequestEmailTemplateSeeder extends Seeder
                     . "See what else is coming: {{board_url}}\n\n"
                     . "The {{app_name}} team",
             ],
-            FeatureRequestStatus::Rejected->value => [
+            FeatureRequestStatus::Rejected->templateType() => [
                 'subject' => 'About your request: {{request_title}}',
                 'body' => "Hi {{store_name}},\n\n"
                     . "We've looked at \"{{request_title}}\" and won't be building it for now.\n\n"
@@ -91,6 +90,17 @@ class FeatureRequestEmailTemplateSeeder extends Seeder
                     . "If your situation is different from what we assumed, reply and tell us.\n\n"
                     . "The board is here if you'd like to back something else: {{board_url}}\n\n"
                     . "The {{app_name}} team",
+            ],
+
+            // Addressed to the team, not to a store, so it reads as a work item
+            // rather than a thank-you.
+            FeatureBoard::NEW_REQUEST_TEMPLATE => [
+                'subject' => 'New request for {{app_name}}: {{request_title}}',
+                'body' => "{{store_name}} asked for something on the {{app_name}} board.\n\n"
+                    . "{{request_title}}\n\n"
+                    . "{{request_description}}\n\n"
+                    . "Review it here: {{admin_url}}\n"
+                    . "Public board: {{board_url}}",
             ],
         ];
     }

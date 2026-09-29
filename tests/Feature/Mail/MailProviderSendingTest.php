@@ -34,7 +34,14 @@ class MailProviderSendingTest extends TestCase
 
         $this->fakeAws();
         Mail::fake();
-        config(['services.ses_tenant.name' => 'shopify-crm-testing']);
+        // Stem plus suffix, composing to the name every assertion below uses.
+        // Split this way on purpose: the suffix must be pinned, because the
+        // real one is derived from APP_KEY and would otherwise differ per
+        // machine and make these tests unreproducible.
+        config([
+            'services.ses_tenant.name' => 'shopify-crm',
+            'services.ses_tenant.suffix' => 'testing',
+        ]);
 
         $this->crmApp = ConnectedApp::forceCreate(['app_name' => 'Test App', 'app_url' => 'https://app.example.test']);
         EmailTemplate::forceCreate([

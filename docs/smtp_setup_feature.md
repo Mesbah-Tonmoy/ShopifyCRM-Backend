@@ -1,0 +1,454 @@
+# SMTP Setup (platform sender per connected app)
+
+Lets an operator pick, from the CRM, which SMTP service a connected Shopify app
+sends its **platform** mail through — the transport behind that app's default
+email option and all of its system mail (install, uninstall, spam alerts,
+billing thresholds). Previously each app had one provider hardcoded (FormCRM had
+Mailtrap inlined in `sendMailtrapEmail`), so switching meant a code change and a
+deploy.
+
+Merchant-supplied SMTP (a store's own Gmail/Zoho/Outlook/SendGrid credentials)
+is unrelated and untouched — that still lives in the app's own settings.
+
+## Where the data lives
+
+The provider table lives **in the app**, not in the CRM. The app is what sends
+the mail and what has to keep working when the CRM is unreachable, so its own
+database is the single source of truth. The CRM stores no copy; its page is a
+proxy, which is why the page needs the app online to load.
+
+```
+CRM frontend  →  CRM backend (SmtpProviderController)  →  {app_url}/api/smtp-providers
+                        Bearer config('webhook.secret')       Bearer CRM_WEBHOOK_SECRET
+```
+
+The secret is the same one `/api/sync-crm` and `pushPlans` already use: the
+CRM's `WEBHOOK_SECRET` must equal the app's `CRM_WEBHOOK_SECRET`.
+
+## Resolution order in the app
+
+The app builds a **chain**, best first, and a send walks it:
+
+1. The `SmtpProvider` row with `isActive = true` and `isEnabled = true`.
+2. The remaining `isEnabled` rows, in `priority` order (lower first).
+3. The `SMTP_*` environment variables, then the legacy `MAILTRAP_*` ones.
+
+The env entry is skipped when a provider row already resolves to the same host
+and credentials, so the chain never retries an identical transport. A row whose
+password will not decrypt is skipped with a warning rather than attempted
+unauthenticated.
+
+So a fresh deploy with an empty table still sends.
+
+## Failover
+
+A send that fails for a **transport** reason is retried on the next entry in the
+chain: connection refused, socket/TLS error, timeout, rejected credentials
+(`EAUTH`, 530, 535), any 4xx, and SES throttling (454). A send that fails
+because the **message** is unacceptable — unknown recipient, mailbox full,
+message too large — is not retried, since every provider would reject it the
+same way and retrying only multiplies the bounce.
+
+One deliberate exception: `554 … address is not verified` is retried, because
+SES verifies identities *per region* and the standby region may have the
+identity the primary lacks.
+
+Known tradeoff: a timeout that arrives after the server already accepted the
+message is indistinguishable from one that arrives before, so a retry could
+deliver twice. That is rarer than an outage silently dropping mail, so the retry
+wins — which is why the retry list is an allowlist and not "retry everything".
+
+Every attempt is recorded in the send result's `details.attempts`, and lands in
+`LeadsActivityLog` for merchant mail. `details.failedOver` is true when a
+backup delivered; `details.exhausted` is true when the whole chain failed.
+
+### Two-region SES
+
+Add one provider per region — e.g. `ses-us-west-1` (active) and `ses-us-east-1`
+(priority 20). Each needs its own endpoint, SMTP credentials and configuration
+set. SES SMTP passwords are region-derived, so credentials issued for one region
+fail with `535` against another region's host.
+
+Identity verification and production (non-sandbox) access are **per-region** in
+SES: a domain verified in California does not count in Virginia. Verify in both,
+or the standby will reject everything the moment you fail over.
+
+The CRM page shows the whole chain, primary first, under "Currently sending
+through" / "Failover order".
+
+A second region buys nothing for per-store mail until it also has tenants in it:
+provisioning targets the active region only, and a failover into a region where a
+store has no tenant cannot send. See *Moving every store to another region*
+below, or use "Fill this region" on the standby's card.
+
+Passwords are stored AES-256-GCM encrypted in the app's database and never
+returned — reads give a mask plus a `hasPassword` flag. An edit form that
+submits an empty password field keeps the stored one; sending an explicit empty
+string clears it.
+
+## CRM surface
+
+| Piece | Location |
+| --- | --- |
+| Page | `frontend/src/views/SmtpProvidersPage.vue` (route `/smtp-setup`) |
+| API client | `frontend/src/services/smtpProviderService.ts` |
+| Proxy | `backend/app/Http/Controllers/Api/SmtpProviderController.php` |
+| Routes | `backend/routes/api.php` — `/apps/{app}/smtp-providers*` |
+| Permissions | `smtp.view`, `smtp.edit` (in `ACLSeeder`) |
+
+Run `php artisan db:seed --class=ACLSeeder` after deploying so the two new
+permissions exist and the full-access roles pick them up.
+
+## App-side surface (per app that supports this)
+
+| Piece | Location |
+| --- | --- |
+| Table | `SmtpProvider` in `prisma/schema.prisma` |
+| Resolver | `app/service/smtp-provider.server.ts` (`getSmtpChain`, `isRetryableSendError`) |
+| Encryption | `app/util/secretBox.server.ts` |
+| Send path | `sendPlatformEmail` in `app/service/email.service.server.ts` |
+| Endpoint | `app/routes/api.smtp-providers.ts` |
+
+App environment variables:
+
+```
+SMTP_ENCRYPTION_KEY=   # optional; falls back to SHOPIFY_API_SECRET
+SMTP_HOST=             # optional env fallback, used when no provider is active
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=
+SMTP_PASS=
+SMTP_FROM=
+SMTP_FROM_NAME=
+SMTP_CONFIGURATION_SET=   # SES only, for the env fallback
+```
+
+## Notes
+
+- Only one provider is active at a time; activation clears the flag on the rest
+  in one transaction. The other enabled providers stay as failover targets.
+- `configurationSet` is emitted as the `X-SES-CONFIGURATION-SET` message header,
+  which is what turns on SES event publishing (bounces, complaints, deliveries)
+  and any dedicated IP pool. Non-SES providers ignore the header.
+- The app caches the resolved config for 60s, so a change made in the CRM takes
+  effect within a minute on every instance behind the load balancer.
+- **Test** opens and authenticates an SMTP connection without sending anything,
+  and records the result on the row.
+- A provider's *From email* only fills in where the app supplied none. The
+  app's own sender wins by default, because its call sites use several distinct
+  system addresses. Tick *Force the From email* (stored as
+  `extra.overrideFrom`) when a service will only accept senders on its own
+  verified domain.
+- Deleting the active provider is allowed and drops the app to the environment
+  fallback, which still sends. The response says so.
+
+## SES tenants (one per Shopify store)
+
+Without tenants, one store with a bad list pushes the whole SES account's bounce
+rate over the threshold and pauses sending for every store. A tenant gives each
+store its own reputation profile, its own metrics, and its own sending status, so
+a problem store can be stopped on its own.
+
+Verified against the SES docs, because these shape the whole design:
+
+| Fact | Consequence here |
+| --- | --- |
+| SMTP header is `X-SES-TENANT` | Set per send, next to `X-SES-CONFIGURATION-SET` |
+| Tenants are region-scoped, never replicated | A tenant exists only where it was created. Provisioning targets **one** region (the active one); a second region is opt-in, and failover can only land where a tenant exists |
+| A tenant cannot send until an identity **and** a configuration set are associated | Provisioning does the associations, not just the create. The IAM key needs `ses:CreateTenantResourceAssociation` on **both** ARNs - a policy listing only the identity fails on the configuration set |
+| Name: max 64 chars, alphanumerics/`-`/`_` only | Shop domains have dots, so the name is derived, not copied |
+| AWS charges per tenant per month | One tenant per store per region is a real line item |
+
+### Credentials
+
+Tenant operations are SES **API** calls and SMTP credentials cannot make them, so
+each provider row carries its own IAM key pair (`awsRegion`, `awsAccessKeyId`,
+`awsSecretAccessKey` encrypted, plus the identity and configuration-set ARNs).
+The key needs `ses:CreateTenant`, `ses:CreateTenantResourceAssociation`,
+`ses:GetTenant`, `ses:DeleteTenant` and
+`ses:UpdateReputationEntityCustomerManagedStatus`.
+
+Both gates must allow these: the identity policy **and** any permissions
+boundary on the user. IAM reports only the first gate that fails, so a boundary
+block looks like a policy problem until the policy is fixed.
+
+### Naming
+
+`tenantNameFor(shop)` strips `.myshopify.com`, sanitises the rest, and appends an
+8-char hash of the full domain. The hash is not decoration: sanitising is lossy,
+so `a.b.myshopify.com` and `a-b.myshopify.com` would otherwise collide. It is
+deterministic, so provisioning can be re-run safely.
+
+### Provisioning
+
+Two triggers, both idempotent (`AlreadyExistsException` counts as success):
+
+- **New install** — `afterAuth` in `shopify.server.ts`, in the **active region
+  only**. A store that never fails over would otherwise pay monthly for a second
+  tenant it never names. A failure is logged and left to the backfill; a store
+  that cannot get a tenant is still installed.
+- **Existing stores** — "Create missing tenants" on the CRM's SES Tenants page,
+  or "Fill this region" on a specific region's card. Paged (25 stores at a time)
+  and sequential, because SES answers bursts with `TooManyRequestsException`.
+
+Every provisioning call takes an optional `providerKey`. Omitted, it means the
+active region. Named, it targets that one — which is how a single store is moved
+to another region, and how a whole region is filled ahead of a migration.
+
+There is no lazy create on send, by choice: it would put an SES round trip on the
+form-submission path.
+
+### Which mail carries a tenant
+
+All of it — but not all under the same tenant. A configuration set with
+suppression scope `TENANT` makes SES reject mail that names no tenant, so "send
+untenanted" is not an option for anything.
+
+Merchant mail (auto-responses, admin notifications, resends) goes under that
+store's tenant. Our own operational mail (install/uninstall notices, spam alerts,
+billing warnings) goes under a **platform tenant** of its own, `__platform__`
+(`PLATFORM_SHOP`). It must not borrow a merchant's: pausing an abusive store
+would otherwise silence the alerts about that store. Mechanically, the difference
+is whether the call site passes `shop`.
+
+### Pause and resume
+
+`localStatus` (ours) and `sendingStatus` (mirrors AWS) are tracked separately.
+A pause writes the local flag first, so it takes effect without waiting on AWS
+and survives an API failure — the failure mode is "blocked here but not yet at
+AWS", never the reverse. A reason is mandatory; it is stored with who asked and
+when.
+
+Pausing applies to **every tenant the store has**, not to one region. Normally
+that is just the active region, since provisioning targets one. It stays unscoped
+because a store that *does* have a second tenant — staged, or mid-migration —
+must be stopped in both, or the next transport failure fails over into a region
+where it is still enabled.
+
+A paused store is refused before any SMTP attempt, and is *not* sent without a
+tenant header — that would put its traffic back on the shared account reputation,
+which is what pausing exists to prevent.
+
+### AWS-initiated pauses
+
+SES pauses tenants on its own via reputation policies (Standard by default) and
+Trust & Safety. Two paths keep our view current:
+
+- `POST /api/webhooks/ses-tenant-status` — wire as an EventBridge **API
+  destination** (not SNS: an SNS HTTP subscription cannot set headers, which
+  would force the secret into the URL). Rule pattern
+  `{"source":["aws.ses"],"detail-type":["Sending Status Enabled","Sending Status Disabled"]}`,
+  connection with an `Authorization: Bearer <SES_EVENT_SECRET>` header.
+- "Sync from AWS" on the tenants page, plus `intent: sync` — the safety net for
+  events that never arrive.
+
+An AWS pause also sets our local flag. An AWS *resume* does not clear a local
+pause: a reputation recovery should not undo an operator's decision.
+
+### Surfaces
+
+| Piece | Location |
+| --- | --- |
+| Table | `SesTenant` in `prisma/schema.prisma` |
+| Service | `app/service/ses-tenant.server.ts` |
+| Endpoint | `app/routes/api.ses-tenants.ts` |
+| EventBridge webhook | `app/routes/api.webhooks.ses-tenant-status.ts` |
+| CRM proxy | `backend/app/Http/Controllers/Api/SesTenantController.php` |
+| CRM page | `frontend/src/views/SesTenantsPage.vue` (route `/ses-tenants`) |
+| Permissions | `ses_tenants.view`, `ses_tenants.edit` |
+
+New app env var: `SES_EVENT_SECRET` (optional; falls back to
+`CRM_WEBHOOK_SECRET`).
+
+### No on/off toggle
+
+There was once a `tenantsEnabled` column gating the `X-SES-TENANT` header. It was
+dropped (`20260911180004_smtp_drop_tenants_toggle`). With suppression scope
+`TENANT`, SES rejects any message that names no tenant, so a provider holding AWS
+credentials always sends the header — a toggle would only have offered a setting
+that breaks all mail.
+
+### Tenant lifecycle
+
+| Event | What happens to the tenants | Where |
+| --- | --- | --- |
+| Install | Created in the **active region** | `afterAuth`, `shopify.server.ts` |
+| Reinstall | Created if missing; an **automatic** pause is lifted | `afterAuth` |
+| Uninstall | **Paused** everywhere the store has a tenant, marked `system:uninstall` | `APP_UNINSTALLED`, `webhooks.tsx` |
+| Shop redact (~48h after uninstall) | **Deleted** in every region | `SHOP_REDACT` + `webhooks.shop.redact.jsx` |
+| Operator deletes | Deleted in the region shown, AWS charge stops | CRM → Delete |
+| Operator replaces | Old deleted, new one created under a new name, same region | CRM → Replace |
+| Operator adds a region | A second tenant created, nothing deleted | CRM → Add region |
+
+Uninstall pauses rather than deletes because Shopify does not redact the shop for
+another 48 hours and the merchant may reinstall inside that window; deleting
+immediately would discard the tenant's reputation history for nothing.
+
+Reinstall lifts only pauses whose `pausedBy` starts with `system:`. An operator's
+abuse pause, or one AWS applied for reputation, survives — otherwise
+uninstall-then-reinstall would be a way to clear a suspension.
+
+Shop redaction is handled in two places, because which URL Shopify calls depends
+on how the compliance webhook is configured. Both are idempotent and both run in
+the background, since Shopify wants a response within 5 seconds.
+
+### Deleting and re-assigning
+
+Deletion removes our row **only when AWS confirms**. A failure leaves the row
+visible carrying the error, rather than an orphaned tenant that still bills every
+month and that nothing in the UI would mention again. The `force` checkbox drops
+the row anyway, for when the tenant was already removed in the AWS console and
+only our record remains.
+
+A store with no tenant appears under **Stores without tenants** on the tenants
+page, each with a *Create tenant* button — after a delete, that list is the only
+place the store shows up.
+
+Re-creating uses the deterministic name, so it repairs rather than renames.
+*Replace* is the opt-out: it deletes the old tenant and creates one with a random
+suffix appended, for when the old tenant's history is unwanted. Rotation deletes
+first on purpose — creating the new name without removing the old would leave a
+tenant behind, invisible and still charged.
+
+### Moving every store to another region
+
+Tenants are region-scoped and never replicated, so "changing region" means
+creating a second set of tenants, switching sending to them, and deleting the
+first set. The CRM drives it from **SES Tenants → Move region** (visible only
+when more than one region is configured), which reads
+`intent: migrationStatus` and shows the three steps with live counts.
+
+Before starting, the target region needs, in the SES console: the sending domain
+verified, a configuration set with the **same event destinations** (or the
+tenant-status webhook stops reporting AWS-side pauses), production access if the
+account is still in the sandbox, and an IAM policy covering that region's
+identity **and** configuration-set ARNs.
+
+| # | Step | UI | API |
+| --- | --- | --- | --- |
+| 1 | Fill the target region | *Provision N store(s)* | `provisionAll` + `providerKey`, paged |
+| 2 | Switch sending to it | *Switch to \<region\>* | `smtp-providers` → `activate` |
+| 3 | Empty the old region | *Delete N tenant(s)* | `deleteRegion` + `providerKey`, paged |
+
+**Step 2 is gated.** The button stays disabled until the app reports
+`readyToCutOver` — every active store has a tenant in the target, every one of
+them is sendable (`ENABLED`/`REINSTATED` **and** `resourcesLinked`), and the
+provider has both ARNs. Cutting over onto a half-filled region does not fail
+loudly; the stragglers simply stop sending, and nobody finds out until a merchant
+complains.
+
+**Step 3 refuses the active region** unless `allowActive` is passed, and the UI
+makes you type the region name. Emptying the region you are sending from stops
+all mail, because SES rejects a send that names no tenant.
+
+#### What the app cannot do for you
+
+Three things sit outside this codebase entirely. The migration panel lists them
+above the cutover button, and the confirmation dialog will not proceed until you
+tick that the first is done.
+
+- **The account-level suppression list is per-region and is not replicated.**
+  Nothing here syncs it. Cut over without copying it and every address that
+  previously hard-bounced becomes sendable again — you re-send to dead addresses
+  and take the bounce-rate hit in the region that has no reputation history to
+  absorb it. Export from the old region, import to the new, *before* step 2.
+- **Reputation does not move.** New tenants in a new region start with none, and
+  the region has its own sending quota and warm-up. Ramp volume; do not cut over
+  cold at full send rate.
+- **Event destinations** on the new configuration set must match, or
+  `POST /api/webhooks/ses-tenant-status` goes quiet and AWS-initiated pauses stop
+  reaching us until someone runs *Sync from AWS*.
+
+#### Moving a single store
+
+*Add region* on a table row creates a tenant for that one store in another
+region, deleting nothing. Follow with *Delete* on the old region's row once mail
+is confirmed flowing. This is also how a region is staged for one store before
+committing to the whole estate.
+
+#### Rollback
+
+Step 2 is reversible on its own: activate the old provider again, as long as
+step 3 has not run. After step 3 the old region has no tenants and rolling back
+means refilling it — step 1 in the other direction. Keep the old region's
+tenants until the new one has been sending cleanly for a while; the monthly
+per-tenant charge is the price of a cheap rollback.
+
+### A store with no tenant cannot send
+
+`resolveTenantForSend` returns one of three things, and the difference decides
+what the send path does next:
+
+| Kind | Meaning | Send path |
+| --- | --- | --- |
+| `send` | A usable tenant in this region | Sends, naming it |
+| `blocked` | A **decision** — the store is paused, or SES disabled it | Stops. Does not try another region: the same decision applies there |
+| `unavailable` | A **fault** — no row here, or the tenant is `PENDING`/`ERROR`/`MISSING` | Moves down the failover chain; another region may work |
+
+There is no "send without a tenant" outcome. Under suppression scope `TENANT`,
+SES rejects untenanted mail outright, so a store whose tenant is missing in every
+region simply cannot send until it has one. That is what makes **Stores without
+tenants** on the CRM page an outage list, not a tidiness list.
+
+## Credential encryption and key rotation
+
+Two values are encrypted at rest: each provider's SMTP password and its AWS
+secret access key. Everything else — host, port, username, access key id, ARNs,
+tenant names — is an identifier, not a credential, and is stored as-is.
+
+```
+sealSecret(plaintext):
+  key    = sha256(SMTP_ENCRYPTION_KEY)      # 32 bytes
+  iv     = randomBytes(12)                  # fresh per write
+  stored = "v2:" + kid + ":" + base64(iv ‖ authTag ‖ ciphertext)
+```
+
+AES-256-GCM, so one primitive covers both secrecy and tamper detection — a
+modified row fails its auth tag rather than decrypting to garbage. A fresh IV per
+write means the same password sealed twice produces different ciphertext.
+
+`kid` is an 8-hex fingerprint of the key material (domain-separated and
+truncated, so it cannot be used to attack the key). It is what makes a rotation
+*finishable*: without it, a half-rotated table is indistinguishable from a
+finished one.
+
+### What this protects against
+
+A database dump, a backup, or a read-only replica leak. It does **not** protect
+against code execution on the app server — the key is in that process's
+environment. KMS or Secrets Manager is the upgrade path if that threat matters.
+
+### Rotating the key
+
+```bash
+openssl rand -base64 32
+```
+
+1. Move the current value of `SMTP_ENCRYPTION_KEY` to
+   `SMTP_ENCRYPTION_KEY_PREVIOUS` (comma-separated; more than one is allowed),
+   put the new key in `SMTP_ENCRYPTION_KEY`, deploy.
+2. CRM → SMTP Setup → **Re-encrypt secrets**. Values are read with the whole
+   ring and rewritten under the new key. Idempotent, and safe to run while both
+   keys are configured — which is what avoids a window where credentials are
+   unreadable.
+3. When the panel shows `0 under an older key`, remove
+   `SMTP_ENCRYPTION_KEY_PREVIOUS` and deploy again.
+
+Skipping step 2 is safe but leaves the old key load-bearing: drop it then and
+those secrets become unreadable.
+
+The SMTP Setup page shows the current key id and the counts — current, stale,
+unreadable — so rotation progress is visible rather than assumed. A secret no key
+can open is reported by provider and field rather than overwritten, because
+overwriting would destroy it; the fix is to paste the credential in again.
+
+`SHOPIFY_API_SECRET` still works as a last-resort reader so rows written before
+`SMTP_ENCRYPTION_KEY` existed keep opening, and the page warns while it is the
+only key configured — one secret shared between form tokens and stored
+credentials means one leak costs both.
+
+### Deferred
+
+An append-only audit trail for tenant pause/resume/delete was discussed and left
+for later. Today only current state is kept (`pausedBy`, `pausedReason`,
+`pausedAt`); a delete removes the row and leaves no trace of who did it.

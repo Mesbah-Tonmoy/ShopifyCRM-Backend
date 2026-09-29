@@ -18,7 +18,45 @@ class SesTenantTest extends TestCase
         parent::setUp();
 
         $this->fakeAws();
-        config(['services.ses_tenant.name' => 'shopify-crm-testing']);
+        // Stem plus suffix, composing to the name every assertion below uses.
+        // Split this way on purpose: the suffix must be pinned, because the
+        // real one is derived from APP_KEY and would otherwise differ per
+        // machine and make these tests unreproducible.
+        config([
+            'services.ses_tenant.name' => 'shopify-crm',
+            'services.ses_tenant.suffix' => 'testing',
+        ]);
+    }
+
+    public function test_the_tenant_name_is_the_stem_plus_the_suffix(): void
+    {
+        $tenants = app(SesTenantManager::class);
+
+        config(['services.ses_tenant.name' => 'shopify-crm-live', 'services.ses_tenant.suffix' => 'a1b2c3d4e5']);
+        $this->assertSame('shopify-crm-live', $tenants->tenantStem());
+        $this->assertSame('shopify-crm-live-a1b2c3d4e5', $tenants->tenantName());
+
+        // No suffix leaves the stem alone, so an explicitly blank
+        // SES_TENANT_SUFFIX keeps an already-provisioned name working.
+        config(['services.ses_tenant.suffix' => '']);
+        $this->assertSame('shopify-crm-live', $tenants->tenantName());
+    }
+
+    public function test_a_long_stem_is_truncated_so_the_name_stays_valid(): void
+    {
+        // SES allows 64 characters. The stem gives way, not the suffix: losing
+        // the suffix would make the name guessable, whereas a clipped stem is
+        // still readable, and an over-long name would be rejected outright.
+        config([
+            'services.ses_tenant.name' => str_repeat('a', 80),
+            'services.ses_tenant.suffix' => 'b1b2b3b4b5',
+        ]);
+
+        $name = app(SesTenantManager::class)->tenantName();
+
+        $this->assertSame(64, strlen($name));
+        $this->assertStringEndsWith('-b1b2b3b4b5', $name);
+        $this->assertTrue(app(SesTenantManager::class)->nameIsValid($name));
     }
 
     public function test_the_tenant_name_defaults_to_one_per_environment(): void

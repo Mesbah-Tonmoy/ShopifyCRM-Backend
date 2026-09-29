@@ -37,8 +37,25 @@ return [
      * reputation or sending status. Credentials live on the Integrations page.
      */
     'ses_tenant' => [
+        // The readable stem. The tenant actually used is this plus the suffix
+        // below -- see SesTenantManager::tenantName().
         'name' => env('SES_TENANT_NAME') ?: 'shopify-crm-' . env('APP_ENV', 'production'),
         'explicit' => filled(env('SES_TENANT_NAME')),
+
+        // An unguessable tail, so the tenant name is not simply "shopify-crm-live".
+        //
+        // With a configuration set whose suppression scope is TENANT, SES
+        // rejects any message that does not name a valid tenant -- so a name
+        // nobody can guess is one more thing an attacker holding only SMTP
+        // credentials would still need. Defence in depth, not a primary
+        // control: the credentials themselves are.
+        //
+        // Derived from APP_KEY rather than random, because the name must be
+        // STABLE. A value that changed per boot would orphan the previous
+        // tenant every restart -- still billing, invisible to this app. APP_KEY
+        // also differs per environment, so local and production diverge for
+        // free. Override with SES_TENANT_SUFFIX to pin one explicitly.
+        'suffix' => env('SES_TENANT_SUFFIX') ?: substr(hash('sha256', 'ses-tenant|' . env('APP_KEY', '')), 0, 10),
     ],
 
     'google' => [

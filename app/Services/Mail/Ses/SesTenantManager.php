@@ -36,9 +36,36 @@ class SesTenantManager
     {
     }
 
-    public function tenantName(): string
+    /** The readable part of the name, straight from configuration. */
+    public function tenantStem(): string
     {
         return (string) config('services.ses_tenant.name');
+    }
+
+    /**
+     * The tenant name: the configured stem plus an unguessable suffix.
+     *
+     * The suffix exists so the name is not derivable from the environment --
+     * under a TENANT suppression scope SES rejects mail that names no valid
+     * tenant, so an unguessable name is one more thing an attacker holding only
+     * SMTP credentials would still need.
+     *
+     * The stem is truncated rather than the suffix, so a long stem can never
+     * push the name past the 64 characters SES allows and silently make every
+     * name invalid.
+     */
+    public function tenantName(): string
+    {
+        $stem = $this->tenantStem();
+        $suffix = trim((string) config('services.ses_tenant.suffix'));
+
+        if ($suffix === '') {
+            return $stem;
+        }
+
+        $tail = '-' . $suffix;
+
+        return substr($stem, 0, max(0, 64 - strlen($tail))) . $tail;
     }
 
     public function nameIsValid(?string $name = null): bool
@@ -85,6 +112,9 @@ class SesTenantManager
 
         return [
             'name' => $this->tenantName(),
+            // Shown separately so the page can say which part came from
+            // SES_TENANT_NAME and which part is the derived suffix.
+            'stem' => $this->tenantStem(),
             'name_valid' => $this->nameIsValid(),
             'name_from_env' => (bool) config('services.ses_tenant.explicit'),
             'environment' => app()->environment(),
