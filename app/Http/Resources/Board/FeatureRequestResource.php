@@ -44,6 +44,20 @@ class FeatureRequestResource extends JsonResource
             'status' => $this->status->value,
             'status_label' => $this->status->label(),
             'status_note' => $this->status_note,
+            /*
+             * On the board for its submitter and for nobody else.
+             *
+             * `visibleTo` lets a store see its own requests while they are held
+             * for review, so that submitting does not look like it failed. But
+             * the row is otherwise indistinguishable from a published one, and
+             * a merchant reasonably reads it as live. This is what lets the
+             * board say otherwise.
+             *
+             * Safe to derive from `is_visible` alone: this resource is only
+             * ever built from a `visibleTo` query, so a row that reaches it
+             * unpublished is by construction the viewer's own.
+             */
+            'is_awaiting_review' => ! $this->is_visible,
             'votes_count' => $this->showsVoteCounts() ? $this->votes_count : null,
             'has_voted' => (bool) ($this->has_voted ?? false),
             'is_subscribed' => (bool) ($this->is_subscribed ?? false),

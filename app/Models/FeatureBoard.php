@@ -13,6 +13,15 @@ class FeatureBoard extends Model
 
     protected $table = 'feature_boards';
 
+    /**
+     * Template for the heads-up sent to the team when a request comes in.
+     *
+     * Not derived from FeatureRequestStatus like the others: this one is
+     * addressed to us, not to a store, and fires on submission rather than on
+     * entering a status.
+     */
+    public const NEW_REQUEST_TEMPLATE = 'feature_request_submitted';
+
     protected $fillable = [
         'app_id',
         'title',
@@ -25,6 +34,8 @@ class FeatureBoard extends Model
         'require_approval',
         'show_vote_counts',
         'notify_on_status_change',
+        'new_request_email',
+        'notify_on_approval',
         'submission_limit_per_day',
         'visible_statuses',
     ];
@@ -39,6 +50,7 @@ class FeatureBoard extends Model
         'require_approval' => 'boolean',
         'show_vote_counts' => 'boolean',
         'notify_on_status_change' => 'boolean',
+        'notify_on_approval' => 'boolean',
         'submission_limit_per_day' => 'integer',
     ];
 
@@ -81,5 +93,25 @@ class FeatureBoard extends Model
     public function autoPublishesSubmissions(): bool
     {
         return ! $this->require_approval;
+    }
+
+    /**
+     * Whether approving a request should tell the store that asked for it.
+     *
+     * Requires moderation to be on. Without review a request is public the
+     * moment it is submitted, so "approved" marks nothing the merchant can
+     * see, and mailing them about it would be noise.
+     */
+    public function announcesApprovals(): bool
+    {
+        return $this->require_approval && $this->notify_on_approval;
+    }
+
+    /**
+     * Where to send the heads-up about a new request, if anywhere.
+     */
+    public function newRequestRecipient(): ?string
+    {
+        return filled($this->new_request_email) ? $this->new_request_email : null;
     }
 }

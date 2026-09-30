@@ -52,6 +52,9 @@ class BoardSettingsController extends Controller
             'require_approval' => ['sometimes', 'boolean'],
             'show_vote_counts' => ['sometimes', 'boolean'],
             'notify_on_status_change' => ['sometimes', 'boolean'],
+            // Blank clears it, which is how the heads-up is switched off.
+            'new_request_email' => ['sometimes', 'nullable', 'email', 'max:255'],
+            'notify_on_approval' => ['sometimes', 'boolean'],
             'submission_limit_per_day' => ['sometimes', 'integer', 'min:0', 'max:100'],
             'visible_statuses' => ['sometimes', 'array'],
             'visible_statuses.*' => [Rule::in(FeatureRequestStatus::values())],
@@ -113,6 +116,8 @@ class BoardSettingsController extends Controller
                 'require_approval',
                 'show_vote_counts',
                 'notify_on_status_change',
+                'new_request_email',
+                'notify_on_approval',
                 'submission_limit_per_day',
                 'visible_statuses',
                 'theme',

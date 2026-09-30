@@ -12,6 +12,9 @@ use App\Http\Controllers\Api\PermissionController;
 use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\PricingPlanController;
 use App\Http\Controllers\Api\IntegrationController;
+use App\Http\Controllers\Api\MailProviderController;
+use App\Http\Controllers\Api\SmtpProviderController;
+use App\Http\Controllers\Api\SesTenantController;
 use App\Http\Controllers\Api\FeatureController;
 use App\Http\Controllers\Api\BoardSettingsController;
 use App\Http\Controllers\Api\FeatureRequestController;
@@ -94,6 +97,38 @@ Route::middleware('auth:sanctum')->group(function () {
     // Integrations routes
     Route::get('/integrations', [IntegrationController::class, 'index'])->middleware('permission:integrations.view');
     Route::put('/integrations/{key}', [IntegrationController::class, 'update'])->middleware('permission:integrations.edit');
+
+    // Email providers for the CRM's own mail (SendGrid, Mailtrap, Amazon SES), one active at a time.
+    Route::get('/integrations/mail-providers', [MailProviderController::class, 'index'])->middleware('permission:integrations.view');
+    Route::post('/integrations/mail-providers/deactivate', [MailProviderController::class, 'deactivate'])->middleware('permission:integrations.edit');
+    Route::get('/integrations/mail-providers/ses/tenant', [MailProviderController::class, 'sesTenant'])->middleware('permission:integrations.view');
+    Route::post('/integrations/mail-providers/ses/tenant', [MailProviderController::class, 'provisionSesTenant'])->middleware('permission:integrations.edit');
+    Route::put('/integrations/mail-providers/{key}', [MailProviderController::class, 'update'])->middleware('permission:integrations.edit');
+    Route::post('/integrations/mail-providers/{key}/activate', [MailProviderController::class, 'activate'])->middleware('permission:integrations.edit');
+    Route::post('/integrations/mail-providers/{key}/test', [MailProviderController::class, 'test'])->middleware('permission:integrations.edit');
+
+    // SMTP providers for a connected app's platform sender. These proxy through
+    // to the app itself, which owns the table — see SmtpProviderController.
+    Route::get('/apps/{app}/smtp-providers', [SmtpProviderController::class, 'index'])->middleware('permission:smtp.view');
+    Route::post('/apps/{app}/smtp-providers', [SmtpProviderController::class, 'store'])->middleware('permission:smtp.edit');
+    Route::post('/apps/{app}/smtp-providers/activate', [SmtpProviderController::class, 'activate'])->middleware('permission:smtp.edit');
+    Route::post('/apps/{app}/smtp-providers/test', [SmtpProviderController::class, 'test'])->middleware('permission:smtp.edit');
+    Route::post('/apps/{app}/smtp-providers/reencrypt', [SmtpProviderController::class, 'reencrypt'])->middleware('permission:smtp.edit');
+    Route::delete('/apps/{app}/smtp-providers/{id}', [SmtpProviderController::class, 'destroy'])->middleware('permission:smtp.edit');
+
+    // SES tenants: one per Shopify store, per region. Also proxied to the app,
+    // which owns the table — see SesTenantController.
+    Route::get('/apps/{app}/ses-tenants', [SesTenantController::class, 'index'])->middleware('permission:ses_tenants.view');
+    Route::post('/apps/{app}/ses-tenants/provision-all', [SesTenantController::class, 'provisionAll'])->middleware('permission:ses_tenants.edit');
+    Route::post('/apps/{app}/ses-tenants/provision-shop', [SesTenantController::class, 'provisionShop'])->middleware('permission:ses_tenants.edit');
+    Route::post('/apps/{app}/ses-tenants/pause', [SesTenantController::class, 'pause'])->middleware('permission:ses_tenants.edit');
+    Route::post('/apps/{app}/ses-tenants/resume', [SesTenantController::class, 'resume'])->middleware('permission:ses_tenants.edit');
+    Route::post('/apps/{app}/ses-tenants/sync', [SesTenantController::class, 'sync'])->middleware('permission:ses_tenants.view');
+    Route::post('/apps/{app}/ses-tenants/regions', [SesTenantController::class, 'regions'])->middleware('permission:ses_tenants.view');
+    // Read-only migration plan, so it needs only view rights; acting on it does not.
+    Route::post('/apps/{app}/ses-tenants/migration-status', [SesTenantController::class, 'migrationStatus'])->middleware('permission:ses_tenants.view');
+    Route::delete('/apps/{app}/ses-tenants/region', [SesTenantController::class, 'destroyRegion'])->middleware('permission:ses_tenants.edit');
+    Route::delete('/apps/{app}/ses-tenants', [SesTenantController::class, 'destroy'])->middleware('permission:ses_tenants.edit');
 
     // Feature request routes
     Route::get('/feature-requests', [FeatureRequestController::class, 'index'])->middleware('permission:feature_requests.view');

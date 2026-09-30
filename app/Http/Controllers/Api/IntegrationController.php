@@ -10,21 +10,20 @@ class IntegrationController extends Controller
 {
     /**
      * Default integrations available in the app.
+     *
+     * Email providers are not here: they share the integrations table but are
+     * managed by MailProviderController, which keeps one active at a time and
+     * never returns their secrets.
      */
     protected const DEFAULTS = [
         'slack' => 'Slack',
         'gmail' => 'Gmail',
-        'sendgrid' => 'SendGrid',
-        'mailtrap' => 'Mailtrap',
     ];
 
     /**
      * Fields required before an integration can be enabled.
      */
-    protected const REQUIRED_FIELDS = [
-        'sendgrid' => ['api_key', 'from_email'],
-        'mailtrap' => ['username', 'password', 'from_email'],
-    ];
+    protected const REQUIRED_FIELDS = [];
 
     /**
      * Get all integrations, provisioning default rows on first access.
@@ -37,7 +36,7 @@ class IntegrationController extends Controller
 
         return response()->json([
             'success' => true,
-            'data' => Integration::orderBy('key')->get(),
+            'data' => Integration::whereIn('key', array_keys(self::DEFAULTS))->orderBy('key')->get(),
         ]);
     }
 

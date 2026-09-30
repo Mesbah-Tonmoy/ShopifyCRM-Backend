@@ -20,6 +20,7 @@ class EventServiceProvider extends ServiceProvider
         ],
         \App\Events\FeatureRequestStatusChanged::class => [
             \App\Listeners\SendFeatureRequestStatusNotification::class,
+            \App\Listeners\NotifyTeamOfNewFeatureRequest::class,
         ],
     ];
 
