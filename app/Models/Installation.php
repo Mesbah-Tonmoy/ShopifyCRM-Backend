@@ -30,6 +30,7 @@ class Installation extends Model
         'installed_at',
         'install_email_sent_at',
         'uninstall_email_sent_at',
+        'followup_email_sent_at',
     ];
 
     protected $casts = [
@@ -41,6 +42,7 @@ class Installation extends Model
         'installed_at'             => 'datetime',
         'install_email_sent_at'    => 'datetime',
         'uninstall_email_sent_at'  => 'datetime',
+        'followup_email_sent_at'   => 'datetime',
     ];
 
     public function app(): BelongsTo

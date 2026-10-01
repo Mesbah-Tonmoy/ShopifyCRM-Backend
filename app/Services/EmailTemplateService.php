@@ -17,6 +17,11 @@ class EmailTemplateService
      */
     private const LOG = 'emails';
 
+    /**
+     * Template type of the email sent seven days after installation.
+     */
+    public const FOLLOWUP_TYPE = '7_day_followup';
+
     protected MailProviderRegistry $mailProviders;
 
     public function __construct(?MailProviderRegistry $mailProviders = null)
@@ -198,10 +203,13 @@ class EmailTemplateService
         $variables = [
             'customer_name' => $installation->shop_owner_name ?? 'Valued Customer',
             'customer_email' => $installation->email,
+            // The seeded templates use {{email}}; without this it was sent
+            // to merchants as the literal placeholder.
+            'email' => $installation->email,
             'store_name' => $installation->store_name,
             'store_url' => $installation->store_url,
             'app_name' => $app->app_name ?? 'Our App',
-            'installation_date' => $installation->created_at->format('M d, Y'),
+            'installation_date' => $this->installedAt($installation)->format('M d, Y'),
             'uninstallation_date' => now()->format('M d, Y'),
             'shopify_plan' => $installation->shopify_plan ?? 'N/A',
             'currency' => $installation->currency ?? 'USD',
@@ -241,10 +249,19 @@ class EmailTemplateService
      */
     public function send7DayFollowupEmail(Installation $installation): bool
     {
-        $daysActive = $installation->created_at->diffInDays(now());
-        
-        return $this->sendTemplateEmail($installation, '7_day_followup', [
+        $daysActive = (int) floor($this->installedAt($installation)->diffInDays(now(), true));
+
+        return $this->sendTemplateEmail($installation, self::FOLLOWUP_TYPE, [
             'days_active' => $daysActive,
         ]);
+    }
+
+    /**
+     * When the merchant installed the app. created_at is only when the row
+     * reached the CRM, which for imported stores is months later.
+     */
+    protected function installedAt(Installation $installation): \Carbon\CarbonInterface
+    {
+        return $installation->installed_at ?? $installation->created_at;
     }
 }

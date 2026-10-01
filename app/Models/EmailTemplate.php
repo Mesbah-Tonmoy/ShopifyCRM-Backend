@@ -58,36 +58,47 @@ class EmailTemplate extends Model
 
     /**
      * Replace variables in the email body with actual values.
-     * 
+     *
+     * The body is sent as HTML, and the values are plain text that merchants
+     * control (store names, feature request titles and descriptions), so each
+     * one is escaped: a store named "<a href=...>" must arrive as text, not as
+     * a link in our email.
+     *
      * @param array $variables Key-value pairs to replace in template
      * @return string
      */
     public function renderBody(array $variables = []): string
     {
-        $body = $this->body;
-        
-        foreach ($variables as $key => $value) {
-            $body = str_replace('{{' . $key . '}}', $value, $body);
-        }
-        
-        return $body;
+        return $this->replaceVariables($this->body, $variables, fn ($value) => e((string) $value));
     }
 
     /**
      * Replace variables in the email subject with actual values.
-     * 
+     *
+     * Not escaped: the subject is a plain-text header, where "&amp;" would be
+     * shown to the reader literally.
+     *
      * @param array $variables Key-value pairs to replace in template
      * @return string
      */
     public function renderSubject(array $variables = []): string
     {
-        $subject = $this->subject;
-        
+        return $this->replaceVariables($this->subject, $variables, fn ($value) => (string) $value);
+    }
+
+    /**
+     * Single pass (strtr), so a value that itself contains "{{store_url}}"
+     * stays as typed instead of being expanded by a later replacement.
+     */
+    private function replaceVariables(string $text, array $variables, callable $format): string
+    {
+        $pairs = [];
+
         foreach ($variables as $key => $value) {
-            $subject = str_replace('{{' . $key . '}}', $value, $subject);
+            $pairs['{{' . $key . '}}'] = $format($value);
         }
-        
-        return $subject;
+
+        return strtr($text, $pairs);
     }
 
     /**

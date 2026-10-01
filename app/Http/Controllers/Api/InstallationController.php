@@ -3,12 +3,19 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\App;
 use App\Models\Installation;
 use Illuminate\Http\Request;
 
 class InstallationController extends Controller
 {
+    /**
+     * Columns the installation list can be sorted by.
+     */
+    private const SORTABLE = [
+        'app_name', 'app_plan', 'store_name', 'email', 'shopify_plan',
+        'is_active', 'install_count', 'installed_at', 'created_at', 'updated_at', 'id',
+    ];
+
     /**
      * Get all installations with filters
      */
@@ -67,11 +74,11 @@ class InstallationController extends Controller
         }
 
         // Filter by install count range
-        if ($request->has('install_count_min')) {
+        if ($request->filled('install_count_min')) {
             $query->where('install_count', '>=', $request->install_count_min);
         }
 
-        if ($request->has('install_count_max')) {
+        if ($request->filled('install_count_max')) {
             $query->where('install_count', '<=', $request->install_count_max);
         }
 
@@ -85,9 +92,12 @@ class InstallationController extends Controller
             });
         }
 
-        // Sort
-        $sortBy = $request->get('sort_by', 'installed_at');
-        $sortOrder = $request->get('sort_order', 'desc');
+        // Sort. Both values are whitelisted: sort_order is concatenated into
+        // raw SQL for the plan column, and an unknown sort_by is a 500.
+        $sortBy = in_array($request->get('sort_by'), self::SORTABLE, true)
+            ? $request->get('sort_by')
+            : 'installed_at';
+        $sortOrder = strtolower((string) $request->get('sort_order')) === 'asc' ? 'asc' : 'desc';
 
         if ($sortBy === 'app_name') {
             $query->join('apps', 'installations.app_id', '=', 'apps.id')
@@ -96,11 +106,8 @@ class InstallationController extends Controller
         } elseif ($sortBy === 'app_plan') {
             $query->orderByRaw("JSON_EXTRACT(app_plan, '$.plan_name') " . $sortOrder);
         } else {
-            // Qualify other columns to avoid ambiguity with apps table
-            $qualifiedSortBy = in_array($sortBy, ['id', 'created_at', 'updated_at']) 
-                ? "installations.{$sortBy}" 
-                : $sortBy;
-            $query->orderBy($qualifiedSortBy, $sortOrder);
+            // Qualified to avoid ambiguity with the apps table
+            $query->orderBy("installations.{$sortBy}", $sortOrder);
         }
 
         $installations = $query->paginate($perPage);
@@ -112,183 +119,28 @@ class InstallationController extends Controller
     }
 
     /**
-     * Get single installation
+     * Distinct plan values for the advanced filter, limited to one app's
+     * stores when app_id is given so an app's list offers only its own plans.
      */
-    public function show(Installation $installation)
+    public function filters(Request $request)
     {
-        $installation->load('app');
+        $scoped = fn () => Installation::query()
+            ->when($request->filled('app_id'), fn ($q) => $q->where('app_id', $request->app_id));
 
-        return response()->json([
-            'success' => true,
-            'data' => $installation,
-        ]);
-    }
-
-    /**
-     * Create new installation
-     */
-    public function store(Request $request)
-    {
-        $validated = $request->validate([
-            'app_id' => 'required|exists:apps,id',
-            'store_name' => 'required|string|max:255',
-            'store_url' => 'required|string|max:255',
-            'email' => 'required|email|max:255',
-            'shop_owner_name' => 'nullable|string|max:255',
-            'currency' => 'nullable|string|max:10',
-            'shopify_plan' => 'nullable|string|max:255',
-            'app_plan' => 'nullable|array',
-            'app_plan.plan_name' => 'nullable|string',
-            'app_plan.has_trial' => 'nullable|boolean',
-            'app_plan.trial_days' => 'nullable|integer|min:0',
-            'app_plan.remaining_trial_days' => 'nullable|integer|min:0',
-            'app_plan.plan_started_at' => 'nullable|date',
-            'app_plan.plan_expires_at' => 'nullable|date',
-            'app_plan.status' => 'nullable|string|in:active,trial,expired,cancelled',
-            'plan_started_at' => 'nullable|date',
-            'plan_expires_at' => 'nullable|date',
-            'is_active' => 'boolean',
-            'install_count' => 'nullable|integer|min:1',
-            'installed_at' => 'nullable|date',
-        ]);
-
-        // Handle app_plan JSON structure
-        if (isset($validated['app_plan'])) {
-            $validated['app_plan'] = json_encode($validated['app_plan']);
-        }
-
-        $installation = Installation::create($validated);
-        $installation->load('app');
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Installation created successfully',
-            'data' => $installation,
-        ], 201);
-    }
-
-    /**
-     * Update installation
-     */
-    public function update(Request $request, Installation $installation)
-    {
-        $validated = $request->validate([
-            'store_name' => 'sometimes|required|string|max:255',
-            'store_url' => 'sometimes|required|string|max:255',
-            'email' => 'sometimes|required|email|max:255',
-            'shop_owner_name' => 'nullable|string|max:255',
-            'currency' => 'nullable|string|max:10',
-            'shopify_plan' => 'nullable|string|max:255',
-            'app_plan' => 'nullable|array',
-            'app_plan.plan_name' => 'nullable|string',
-            'app_plan.has_trial' => 'nullable|boolean',
-            'app_plan.trial_days' => 'nullable|integer|min:0',
-            'app_plan.remaining_trial_days' => 'nullable|integer|min:0',
-            'app_plan.plan_started_at' => 'nullable|date',
-            'app_plan.plan_expires_at' => 'nullable|date',
-            'app_plan.status' => 'nullable|string|in:active,trial,expired,cancelled',
-            'plan_started_at' => 'nullable|date',
-            'plan_expires_at' => 'nullable|date',
-            'is_active' => 'boolean',
-            'install_count' => 'nullable|integer|min:1',
-            'installed_at' => 'nullable|date',
-        ]);
-
-        // Handle app_plan JSON structure
-        if (isset($validated['app_plan'])) {
-            // Merge with existing app_plan if updating partially
-            $currentPlan = $installation->app_plan ?? [];
-            $validated['app_plan'] = json_encode(array_merge($currentPlan, $validated['app_plan']));
-        }
-
-        $installation->update($validated);
-        $installation->load('app');
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Installation updated successfully',
-            'data' => $installation,
-        ]);
-    }
-
-    /**
-     * Delete installation
-     */
-    public function destroy(Installation $installation)
-    {
-        $installation->delete();
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Installation deleted successfully',
-        ]);
-    }
-
-    /**
-     * Get installations by app
-     */
-    public function byApp(Request $request, App $app)
-    {
-        $perPage = $request->get('per_page', 15);
-        $query = $app->installations();
-
-        // Filter by active status
-        if ($request->has('is_active')) {
-            $query->where('is_active', $request->boolean('is_active'));
-        }
-
-        // Filter by date range
-        if ($request->has('date_from')) {
-            $query->whereDate('created_at', '>=', $request->date_from);
-        }
-
-        if ($request->has('date_to')) {
-            $query->whereDate('created_at', '<=', $request->date_to);
-        }
-
-        // Filter by plan status
-        if ($request->has('plan_status')) {
-            $query->whereRaw("JSON_EXTRACT(app_plan, '$.status') = ?", [$request->plan_status]);
-        }
-
-        // Filter by trial status
-        if ($request->has('has_trial')) {
-            $query->whereRaw("JSON_EXTRACT(app_plan, '$.has_trial') = ?", [$request->boolean('has_trial')]);
-        }
-
-        // Search
-        if ($request->has('search')) {
-            $search = $request->search;
-            $query->where(function ($q) use ($search) {
-                $q->where('store_name', 'like', "%{$search}%")
-                  ->orWhere('email', 'like', "%{$search}%");
-            });
-        }
-
-        $installations = $query->paginate($perPage);
-
-        return response()->json([
-            'success' => true,
-            'data' => $installations,
-        ]);
-    }
-    public function filters()
-    {
-        $shopifyPlans = Installation::whereNotNull('shopify_plan')
+        $shopifyPlans = $scoped()
+            ->whereNotNull('shopify_plan')
             ->where('shopify_plan', '!=', '')
             ->distinct()
             ->pluck('shopify_plan')
             ->sort()
             ->values();
 
-        $appPlans = Installation::whereNotNull('app_plan')
-            ->get()
-            ->map(function ($installation) {
-                if (is_array($installation->app_plan)) {
-                    return $installation->app_plan['plan_name'] ?? null;
-                }
-                return $installation->app_plan;
-            })
+        // app_plan is JSON - either {"plan_name": ...} or, for older rows, a
+        // bare string - so the name is pulled out after the cast.
+        $appPlans = $scoped()
+            ->whereNotNull('app_plan')
+            ->pluck('app_plan')
+            ->map(fn ($plan) => is_array($plan) ? ($plan['plan_name'] ?? null) : $plan)
             ->filter()
             ->unique()
             ->sort()
