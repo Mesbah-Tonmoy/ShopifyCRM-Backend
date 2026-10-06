@@ -23,15 +23,17 @@ class NotifyTeamOfNewFeatureRequest
 
         $request = $event->featureRequest;
         $app = $request->app;
-        $recipient = $app?->board?->newRequestRecipient();
+        $audience = $app?->board?->newRequestAudience() ?? ['to' => [], 'cc' => [], 'bcc' => []];
 
-        if (! $recipient) {
+        // A cc or bcc on its own is not a send: the heads-up is switched off
+        // by clearing the To list, exactly as it was by clearing the address.
+        if ($audience['to'] === []) {
             return;
         }
 
         SendBoardTeamEmail::dispatch(
             (int) $request->app_id,
-            $recipient,
+            $audience['to'],
             FeatureBoard::NEW_REQUEST_TEMPLATE,
             [
                 'app_name' => $app->app_name ?? '',
@@ -44,6 +46,8 @@ class NotifyTeamOfNewFeatureRequest
                     : '',
                 'admin_url' => rtrim((string) config('board.url'), '/') . '/feature-requests',
             ],
+            cc: $audience['cc'],
+            bcc: $audience['bcc'],
         );
     }
 }

@@ -13,8 +13,8 @@ use Illuminate\Support\Collection;
 /**
  * Turns a status change into emails.
  *
- * Kept out of the service that performs the move, so moderation logic stays
- * free of mail concerns.
+ * Kept out of the service that performs the move, so the lifecycle logic
+ * stays free of mail concerns.
  */
 class SendFeatureRequestStatusNotification implements ShouldQueue
 {
@@ -24,7 +24,9 @@ class SendFeatureRequestStatusNotification implements ShouldQueue
         $log = $event->log;
         $status = $log->to_status;
 
-        // The admin unticked "notify" for this particular move.
+        // The admin unticked "notify" for this particular move. Nothing else
+        // sits in front of this choice: whoever makes the move decides whether
+        // it is worth an email, status by status.
         if (! $event->notify) {
             return;
         }
@@ -38,16 +40,6 @@ class SendFeatureRequestStatusNotification implements ShouldQueue
         $board = $request->app?->board;
 
         if (! $board || ! $board->notify_on_status_change) {
-            return;
-        }
-
-        /*
-         * Approval is only an event worth announcing where requests are held
-         * for review. On an open board a request is public the moment it is
-         * submitted, so "approved" marks nothing the merchant can see. Opt-in
-         * even then, via the board's own setting.
-         */
-        if ($status === FeatureRequestStatus::Approved && ! $board->announcesApprovals()) {
             return;
         }
 

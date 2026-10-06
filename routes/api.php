@@ -71,6 +71,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Route::get('/installations/export', [InstallationController::class, 'export'])->middleware('permission:installations.export');
     
     // Email Templates routes
+    Route::get('/email-templates/filters', [EmailTemplateController::class, 'filters'])->middleware('permission:email_templates.view');
     Route::get('/email-templates', [EmailTemplateController::class, 'index'])->middleware('permission:email_templates.view');
     Route::get('/email-templates/{emailTemplate}', [EmailTemplateController::class, 'show'])->middleware('permission:email_templates.view');
     Route::post('/email-templates', [EmailTemplateController::class, 'store'])->middleware('permission:email_templates.edit');

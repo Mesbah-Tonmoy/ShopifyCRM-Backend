@@ -34,7 +34,7 @@ class FeatureRequestResource extends BoardResource
             'is_visible' => $this->is_visible,
             'is_hidden' => $this->is_hidden,
             // What merchants actually see, accounting for the board's
-            // moderation setting rather than the raw flag.
+            // pending-visibility setting rather than the raw flag.
             'is_public' => $this->isPubliclyVisible(),
             'updated_at' => $this->updated_at?->toIso8601String(),
 

@@ -57,7 +57,7 @@ class FeatureRequestService
                     'description' => $data['description'] ?? null,
                     'image' => $imagePath,
                     'status' => FeatureRequestStatus::Pending,
-                    // Boards without moderation publish submissions immediately.
+                    // Published at once unless the board holds pending requests back.
                     'is_visible' => $board->autoPublishesSubmissions(),
                 ]));
 

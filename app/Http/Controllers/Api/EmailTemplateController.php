@@ -56,6 +56,44 @@ class EmailTemplateController extends Controller
     }
 
     /**
+     * Options for the filter dropdowns.
+     *
+     * Served separately from index() because that one is paginated: deriving
+     * the options from the rows on screen would hide every app and type that
+     * happens to fall on a later page.
+     */
+    public function filters()
+    {
+        $appIds = EmailTemplate::query()->distinct()->pluck('app_id');
+
+        $apps = App::whereIn('id', $appIds)
+            ->orderBy('app_name')
+            ->get(['id', 'app_name'])
+            ->map(fn (App $app) => [
+                'id' => $app->id,
+                'app_name' => $app->app_name,
+            ]);
+
+        $types = EmailTemplate::query()
+            ->distinct()
+            ->orderBy('type')
+            ->pluck('type')
+            ->map(fn (string $type) => [
+                'value' => $type,
+                'label' => EmailTemplate::typeLabel($type),
+            ])
+            ->values();
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'apps' => $apps,
+                'types' => $types,
+            ],
+        ]);
+    }
+
+    /**
      * Get single email template
      */
     public function show(EmailTemplate $emailTemplate)

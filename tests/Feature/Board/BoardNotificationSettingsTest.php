@@ -19,8 +19,8 @@ use Tests\Concerns\BuildsBoardFixtures;
 use Tests\TestCase;
 
 /**
- * The two per-board notification settings: the heads-up to the team when a
- * request arrives, and the note to the submitter when one is approved.
+ * The per-board notification settings: the heads-up to the team when a
+ * request arrives, and the board-wide switch for status emails.
  *
  * Listeners are exercised directly rather than through the service, for the
  * same reason as FeatureRequestNotificationTest: they are queued, so
@@ -54,12 +54,75 @@ class BoardNotificationSettingsTest extends TestCase
         Queue::assertPushed(SendBoardTeamEmail::class, 1);
         Queue::assertPushed(
             SendBoardTeamEmail::class,
-            fn (SendBoardTeamEmail $job) => $job->recipient === 'team@example.test'
+            fn (SendBoardTeamEmail $job) => $job->recipient === ['team@example.test']
                 && $job->templateType === FeatureBoard::NEW_REQUEST_TEMPLATE
                 && $job->appId === $app->id
                 && $job->variables['request_title'] === $request->title
                 && $job->variables['store_name'] === 'store.myshopify.com'
         );
+    }
+
+    public function test_it_emails_every_address_on_the_list_with_cc_and_bcc(): void
+    {
+        $app = $this->makeApp([
+            'new_request_email' => 'team@example.test, product@example.test',
+            'new_request_cc' => 'support@example.test',
+            'new_request_bcc' => 'archive@example.test, audit@example.test',
+        ]);
+        $store = $this->makeInstallation($app, 'store.myshopify.com', 'store@example.test');
+        $request = $this->makeRequest($app, $store);
+
+        $this->announceSubmission($request);
+
+        Queue::assertPushed(
+            SendBoardTeamEmail::class,
+            fn (SendBoardTeamEmail $job) => $job->recipient === ['team@example.test', 'product@example.test']
+                && $job->cc === ['support@example.test']
+                && $job->bcc === ['archive@example.test', 'audit@example.test']
+        );
+    }
+
+    /**
+     * Whitespace, trailing separators and a repeated address are all things
+     * someone pasting a list will produce.
+     */
+    public function test_it_tidies_up_a_pasted_recipient_list(): void
+    {
+        $app = $this->makeApp([
+            'new_request_email' => '  team@example.test ,, PRODUCT@example.test , team@example.test,',
+        ]);
+        $request = $this->makeRequest($app, $this->makeInstallation($app, 'store.myshopify.com'));
+
+        $this->assertSame(
+            'team@example.test, PRODUCT@example.test',
+            $app->board->fresh()->new_request_email,
+            'The stored list should be normalised on the way in.'
+        );
+
+        $this->announceSubmission($request);
+
+        Queue::assertPushed(
+            SendBoardTeamEmail::class,
+            fn (SendBoardTeamEmail $job) => $job->recipient === ['team@example.test', 'PRODUCT@example.test']
+        );
+    }
+
+    /**
+     * A cc or bcc describes who else is copied on a message; with no To there
+     * is no message, so nothing is sent.
+     */
+    public function test_a_cc_or_bcc_alone_sends_nothing(): void
+    {
+        $app = $this->makeApp([
+            'new_request_email' => null,
+            'new_request_cc' => 'support@example.test',
+            'new_request_bcc' => 'archive@example.test',
+        ]);
+        $request = $this->makeRequest($app, $this->makeInstallation($app, 'store.myshopify.com'));
+
+        $this->announceSubmission($request);
+
+        Queue::assertNotPushed(SendBoardTeamEmail::class);
     }
 
     /**
@@ -120,7 +183,7 @@ class BoardNotificationSettingsTest extends TestCase
 
         Queue::assertPushed(
             SendBoardTeamEmail::class,
-            fn (SendBoardTeamEmail $job) => $job->recipient === 'team@example.test'
+            fn (SendBoardTeamEmail $job) => $job->recipient === ['team@example.test']
                 && $job->variables['request_title'] === 'Sticky add-to-cart bar'
         );
     }
@@ -130,9 +193,14 @@ class BoardNotificationSettingsTest extends TestCase
      | -----------------------------------------------------------------
      */
 
-    public function test_it_emails_the_submitter_on_approval_when_review_is_on(): void
+    /**
+     * Approval is an ordinary status change: whoever makes the move decides,
+     * with the checkbox in the modal, whether it is worth an email. No board
+     * setting sits in front of that choice.
+     */
+    public function test_it_emails_the_submitter_on_approval(): void
     {
-        $app = $this->makeApp(['require_approval' => true, 'notify_on_approval' => true]);
+        $app = $this->makeApp();
         $submitter = $this->makeInstallation($app, 'store.myshopify.com', 'store@example.test');
         $request = $this->makeRequest($app, $submitter);
 
@@ -146,38 +214,50 @@ class BoardNotificationSettingsTest extends TestCase
     }
 
     /**
-     * Without review a request is public the moment it is submitted, so there
-     * is no approval worth announcing — even with the setting switched on.
+     * Regression: a board that publishes requests on arrival used to swallow
+     * the approval email outright, so ticking the box in the modal did
+     * nothing. Whether pending requests are held back from the public board
+     * says nothing about who gets emailed.
      */
-    public function test_it_stays_quiet_on_approval_when_review_is_off(): void
+    public function test_it_emails_on_approval_even_when_pending_requests_are_public(): void
     {
-        $app = $this->makeApp(['require_approval' => false, 'notify_on_approval' => true]);
+        $app = $this->makeApp(['hide_pending_requests' => false]);
         $submitter = $this->makeInstallation($app, 'store.myshopify.com', 'store@example.test');
         $request = $this->makeRequest($app, $submitter);
 
         $this->changeStatus($request, FeatureRequestStatus::Approved);
 
-        Queue::assertNotPushed(SendFeatureRequestEmail::class);
+        Queue::assertPushed(SendFeatureRequestEmail::class, 1);
     }
 
-    public function test_it_stays_quiet_on_approval_when_the_setting_is_off(): void
+    public function test_it_stays_quiet_on_approval_when_the_admin_unticked_notify(): void
     {
-        $app = $this->makeApp(['require_approval' => true, 'notify_on_approval' => false]);
+        $app = $this->makeApp();
         $submitter = $this->makeInstallation($app, 'store.myshopify.com', 'store@example.test');
         $request = $this->makeRequest($app, $submitter);
 
-        $this->changeStatus($request, FeatureRequestStatus::Approved);
+        $this->changeStatus($request, FeatureRequestStatus::Approved, notify: false);
 
         Queue::assertNotPushed(SendFeatureRequestEmail::class);
     }
 
     /**
-     * The gate is about approval alone. Shipping something still tells the
-     * store that asked for it, whatever the review setting says.
+     * The board-wide switch still turns every status email off at once.
      */
-    public function test_the_gate_does_not_touch_other_statuses(): void
+    public function test_it_stays_quiet_when_status_emails_are_off_for_the_board(): void
     {
-        $app = $this->makeApp(['require_approval' => false, 'notify_on_approval' => false]);
+        $app = $this->makeApp(['notify_on_status_change' => false]);
+        $submitter = $this->makeInstallation($app, 'store.myshopify.com', 'store@example.test');
+        $request = $this->makeRequest($app, $submitter);
+
+        $this->changeStatus($request, FeatureRequestStatus::Approved);
+
+        Queue::assertNotPushed(SendFeatureRequestEmail::class);
+    }
+
+    public function test_other_statuses_still_reach_the_store_that_asked(): void
+    {
+        $app = $this->makeApp();
         $submitter = $this->makeInstallation($app, 'store.myshopify.com', 'store@example.test');
         $request = $this->makeRequest($app, $submitter);
 
@@ -206,8 +286,11 @@ class BoardNotificationSettingsTest extends TestCase
             ->handle(new FeatureRequestStatusChanged($request->fresh(), $log, true));
     }
 
-    protected function changeStatus(FeatureRequest $request, FeatureRequestStatus $to): void
-    {
+    protected function changeStatus(
+        FeatureRequest $request,
+        FeatureRequestStatus $to,
+        bool $notify = true,
+    ): void {
         $log = FeatureRequestStatusLog::create([
             'feature_request_id' => $request->id,
             'from_status' => FeatureRequestStatus::Pending->value,
@@ -215,6 +298,6 @@ class BoardNotificationSettingsTest extends TestCase
         ]);
 
         app(SendFeatureRequestStatusNotification::class)
-            ->handle(new FeatureRequestStatusChanged($request->fresh(), $log, true));
+            ->handle(new FeatureRequestStatusChanged($request->fresh(), $log, $notify));
     }
 }

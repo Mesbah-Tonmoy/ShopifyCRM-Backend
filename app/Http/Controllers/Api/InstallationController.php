@@ -34,13 +34,28 @@ class InstallationController extends Controller
             $query->where('is_active', $request->boolean('is_active'));
         }
 
-        // Filter by date range
-        if ($request->has('date_from')) {
-            $query->whereDate('installations.created_at', '>=', $request->date_from);
+        /*
+         * Filter by date range.
+         *
+         * Filters the install date, which is what the list shows and sorts by.
+         * created_at is when the CRM first wrote the row, and the two only
+         * agree for stores that arrived through the install webhook: every
+         * store pulled in by connecting or resyncing an app shares the one
+         * created_at of that import, so filtering on it silently matched
+         * nothing for those apps.
+         *
+         * installed_at is nullable - older rows and webhooks that omit it -
+         * so those fall back to created_at rather than dropping out of every
+         * range.
+         */
+        $installDate = 'COALESCE(installations.installed_at, installations.created_at)';
+
+        if ($request->filled('date_from')) {
+            $query->whereRaw("DATE({$installDate}) >= ?", [$request->date_from]);
         }
 
-        if ($request->has('date_to')) {
-            $query->whereDate('installations.created_at', '<=', $request->date_to);
+        if ($request->filled('date_to')) {
+            $query->whereRaw("DATE({$installDate}) <= ?", [$request->date_to]);
         }
 
         // Filter by plan name

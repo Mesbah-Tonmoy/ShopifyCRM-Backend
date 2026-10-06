@@ -2,9 +2,11 @@
 
 namespace App\Models;
 
+use App\Enums\FeatureRequestStatus;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Str;
 
 class EmailTemplate extends Model
 {
@@ -23,6 +25,29 @@ class EmailTemplate extends Model
     protected $casts = [
         'is_active' => 'boolean',
     ];
+
+    /**
+     * Human-readable name for a template type.
+     *
+     * The board's status templates are derived from FeatureRequestStatus so a
+     * renamed status cannot leave a stale label behind here; anything this map
+     * does not know is title-cased rather than shown as a raw key.
+     */
+    public static function typeLabel(string $type): string
+    {
+        $labels = [
+            'install' => 'Install Welcome',
+            'uninstall' => 'Uninstall Feedback',
+            '7_day_followup' => '7-Day Follow-up',
+            FeatureBoard::NEW_REQUEST_TEMPLATE => 'Feature Request: New Submission (to your team)',
+        ];
+
+        foreach (FeatureRequestStatus::cases() as $status) {
+            $labels[$status->templateType()] = 'Feature Request: ' . $status->label();
+        }
+
+        return $labels[$type] ?? Str::headline($type);
+    }
 
     /**
      * Get the app that owns this email template.

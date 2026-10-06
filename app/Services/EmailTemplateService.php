@@ -6,6 +6,7 @@ use App\Models\EmailTemplate;
 use App\Models\Installation;
 use App\Models\App;
 use App\Mail\TemplateMail;
+use App\Support\AddressList;
 use App\Services\Mail\MailProviderRegistry;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Log;
@@ -69,16 +70,21 @@ class EmailTemplateService
      */
     public function sendTemplate(
         int $appId,
-        string $recipient,
+        string|array $recipient,
         string $templateType,
         array $variables = [],
         array $context = [],
+        string|array|null $cc = null,
+        string|array|null $bcc = null,
     ): bool {
-        $logContext = array_merge(['type' => $templateType, 'recipient' => $recipient], $context);
+        $to = AddressList::parse($recipient);
+
+        $logContext = array_merge(['type' => $templateType, 'recipient' => implode(', ', $to)], $context);
 
         // Guarded here rather than in sendTemplateEmail() so both entry points
-        // are covered: a board's notification address can be blank too.
-        if (blank($recipient)) {
+        // are covered: a board's notification address can be blank too. A cc or
+        // bcc on its own is not enough - a message still needs a To.
+        if ($to === []) {
             Log::channel(self::LOG)->error('Email not sent: no recipient address', $logContext);
 
             return false;
@@ -130,17 +136,26 @@ class EmailTemplateService
             }
 
             $pending = $mailerName ? Mail::mailer($mailerName) : Mail::mailer(config('mail.default'));
-            $pending = $pending->to($recipient);
+            $pending = $pending->to($to);
 
-            $cc = $provider['cc'] ?? null;
-            $bcc = $provider['bcc'] ?? null;
+            // The provider's own cc/bcc apply to everything it sends; the
+            // caller's are for this message alone. Both go on, de-duplicated.
+            $ccList = AddressList::parse(array_merge(
+                AddressList::parse($provider['cc'] ?? null),
+                AddressList::parse($cc),
+            ));
 
-            if (!empty($cc)) {
-                $pending->cc($this->parseAddressList($cc));
+            $bccList = AddressList::parse(array_merge(
+                AddressList::parse($provider['bcc'] ?? null),
+                AddressList::parse($bcc),
+            ));
+
+            if ($ccList !== []) {
+                $pending->cc($ccList);
             }
 
-            if (!empty($bcc)) {
-                $pending->bcc($this->parseAddressList($bcc));
+            if ($bccList !== []) {
+                $pending->bcc($bccList);
             }
 
             // Folded into the array the log calls below actually read. Built
@@ -149,8 +164,8 @@ class EmailTemplateService
                 'via' => $providerLabel,
                 'subject' => $rendered['subject'],
                 'from' => $provider['from_email'] ?? config('mail.from.address'),
-                'cc' => $cc ?: null,
-                'bcc' => $bcc ?: null,
+                'cc' => $ccList ? implode(', ', $ccList) : null,
+                'bcc' => $bccList ? implode(', ', $bccList) : null,
                 'ses_tenant' => $resolved?->tenant,
             ];
 
@@ -176,17 +191,6 @@ class EmailTemplateService
 
             return false;
         }
-    }
-
-    /**
-     * Split a comma-separated address string into an array.
-     *
-     * @param string $addresses
-     * @return array
-     */
-    protected function parseAddressList(string $addresses): array
-    {
-        return array_values(array_filter(array_map('trim', explode(',', $addresses))));
     }
 
     /**

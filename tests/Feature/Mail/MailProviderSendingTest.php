@@ -228,6 +228,67 @@ class MailProviderSendingTest extends TestCase
     }
 
     /* -----------------------------------------------------------------
+     | Recipients
+     | -----------------------------------------------------------------
+     */
+
+    public function test_it_sends_to_every_address_with_cc_and_bcc(): void
+    {
+        app(EmailTemplateService::class)->sendTemplate(
+            $this->crmApp->id,
+            ['team@example.com', 'product@example.com'],
+            'install',
+            cc: ['support@example.com'],
+            bcc: 'archive@example.com, audit@example.com',
+        );
+
+        Mail::assertSent(TemplateMail::class, function (TemplateMail $mail) {
+            return $mail->hasTo('team@example.com')
+                && $mail->hasTo('product@example.com')
+                && $mail->hasCc('support@example.com')
+                && $mail->hasBcc('archive@example.com')
+                && $mail->hasBcc('audit@example.com');
+        });
+    }
+
+    /**
+     * The provider's own cc/bcc apply to everything it sends, so they must
+     * survive alongside the ones this particular message carries.
+     */
+    public function test_a_provider_cc_is_kept_alongside_the_per_message_one(): void
+    {
+        $this->storeProvider('mailtrap', [
+            'username' => 'u',
+            'password' => 'p',
+            'from_email' => 'from@example.com',
+            'cc' => 'always@example.com',
+        ], active: true);
+
+        app(EmailTemplateService::class)->sendTemplate(
+            $this->crmApp->id,
+            'team@example.com',
+            'install',
+            cc: 'support@example.com',
+        );
+
+        Mail::assertSent(TemplateMail::class, fn (TemplateMail $mail) => $mail->hasCc('always@example.com')
+            && $mail->hasCc('support@example.com'));
+    }
+
+    public function test_it_sends_nothing_when_the_recipient_list_is_empty(): void
+    {
+        $sent = app(EmailTemplateService::class)->sendTemplate(
+            $this->crmApp->id,
+            '  ,  ',
+            'install',
+            cc: 'support@example.com',
+        );
+
+        $this->assertFalse($sent, 'A cc with no To is not a send.');
+        Mail::assertNothingSent();
+    }
+
+    /* -----------------------------------------------------------------
      | Migration to one-active-at-a-time
      | -----------------------------------------------------------------
      */

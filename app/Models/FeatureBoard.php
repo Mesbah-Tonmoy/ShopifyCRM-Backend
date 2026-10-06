@@ -3,6 +3,8 @@
 namespace App\Models;
 
 use App\Enums\FeatureRequestStatus;
+use App\Support\AddressList;
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -31,11 +33,12 @@ class FeatureBoard extends Model
         'allow_submissions',
         'allow_voting',
         'allow_comments',
-        'require_approval',
+        'hide_pending_requests',
         'show_vote_counts',
         'notify_on_status_change',
         'new_request_email',
-        'notify_on_approval',
+        'new_request_cc',
+        'new_request_bcc',
         'submission_limit_per_day',
         'visible_statuses',
     ];
@@ -47,10 +50,9 @@ class FeatureBoard extends Model
         'allow_submissions' => 'boolean',
         'allow_voting' => 'boolean',
         'allow_comments' => 'boolean',
-        'require_approval' => 'boolean',
+        'hide_pending_requests' => 'boolean',
         'show_vote_counts' => 'boolean',
         'notify_on_status_change' => 'boolean',
-        'notify_on_approval' => 'boolean',
         'submission_limit_per_day' => 'integer',
     ];
 
@@ -89,29 +91,51 @@ class FeatureBoard extends Model
 
     /**
      * Whether a newly submitted request should appear on the board immediately.
+     *
+     * Boards show everything by default. Switching `hide_pending_requests` on
+     * keeps new requests off the public board until an admin publishes them.
      */
     public function autoPublishesSubmissions(): bool
     {
-        return ! $this->require_approval;
+        return ! $this->hide_pending_requests;
     }
 
     /**
-     * Whether approving a request should tell the store that asked for it.
+     * Who hears about a new request: the To list, plus any cc and bcc.
      *
-     * Requires moderation to be on. Without review a request is public the
-     * moment it is submitted, so "approved" marks nothing the merchant can
-     * see, and mailing them about it would be noise.
+     * Returned together because a send needs all three at once, and because
+     * the single-method shape keeps these names clear of Laravel's attribute
+     * mutators below, which must be called after the columns they normalise.
+     *
+     * @return array{to: array<int, string>, cc: array<int, string>, bcc: array<int, string>}
      */
-    public function announcesApprovals(): bool
+    public function newRequestAudience(): array
     {
-        return $this->require_approval && $this->notify_on_approval;
+        return [
+            'to' => AddressList::parse($this->new_request_email),
+            'cc' => AddressList::parse($this->new_request_cc),
+            'bcc' => AddressList::parse($this->new_request_bcc),
+        ];
     }
 
-    /**
-     * Where to send the heads-up about a new request, if anywhere.
+    /*
+     | Address lists are stored in the form they are typed - comma separated -
+     | but normalised on the way in, so a stray space or a trailing comma
+     | cannot become an empty recipient.
      */
-    public function newRequestRecipient(): ?string
+
+    protected function newRequestEmail(): Attribute
     {
-        return filled($this->new_request_email) ? $this->new_request_email : null;
+        return Attribute::set(fn ($value) => AddressList::normalise($value));
+    }
+
+    protected function newRequestCc(): Attribute
+    {
+        return Attribute::set(fn ($value) => AddressList::normalise($value));
+    }
+
+    protected function newRequestBcc(): Attribute
+    {
+        return Attribute::set(fn ($value) => AddressList::normalise($value));
     }
 }

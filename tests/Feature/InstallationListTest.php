@@ -137,6 +137,56 @@ class InstallationListTest extends TestCase
             ->assertJsonPath('data.total', 5);
     }
 
+    /**
+     * Regression: the range filtered created_at - when the CRM first wrote the
+     * row - while the list shows and sorts by installed_at. Stores pulled in by
+     * connecting or resyncing an app all share the one created_at of that
+     * import, so every range over their real install dates matched nothing.
+     */
+    public function test_the_date_range_filters_the_install_date_not_the_import_date(): void
+    {
+        $imported = $this->install($this->appA, 'imported', 'Free', 'Basic');
+
+        // What a resync leaves behind: installed months before the CRM saw it.
+        $imported->forceFill([
+            'installed_at' => '2026-04-20 10:00:00',
+            'created_at' => '2026-08-21 09:00:00',
+        ])->save();
+
+        $this->actingAs($this->user)->getJson('/api/installations?' . http_build_query([
+            'app_id' => $this->appA->id,
+            'date_from' => '2026-04-01',
+            'date_to' => '2026-04-30',
+        ]))
+            ->assertOk()
+            ->assertJsonPath('data.total', 1)
+            ->assertJsonPath('data.data.0.store_url', 'imported.myshopify.com');
+
+        // And the import date itself is not what the range matches.
+        $this->actingAs($this->user)->getJson('/api/installations?' . http_build_query([
+            'app_id' => $this->appA->id,
+            'date_from' => '2026-08-01',
+            'date_to' => '2026-08-31',
+        ]))
+            ->assertOk()
+            ->assertJsonMissing(['store_url' => 'imported.myshopify.com']);
+    }
+
+    public function test_a_row_without_an_install_date_falls_back_to_when_it_was_recorded(): void
+    {
+        $legacy = $this->install($this->appB, 'legacy', 'Free', 'Basic');
+
+        $legacy->forceFill(['installed_at' => null, 'created_at' => '2026-03-15 09:00:00'])->save();
+
+        $this->actingAs($this->user)->getJson('/api/installations?' . http_build_query([
+            'date_from' => '2026-03-01',
+            'date_to' => '2026-03-31',
+        ]))
+            ->assertOk()
+            ->assertJsonPath('data.total', 1)
+            ->assertJsonPath('data.data.0.store_url', 'legacy.myshopify.com');
+    }
+
     public function test_sorting_by_app_name_still_works(): void
     {
         $response = $this->actingAs($this->user)

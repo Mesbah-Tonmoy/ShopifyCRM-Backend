@@ -11,16 +11,16 @@ use Illuminate\Support\Facades\Queue;
 use Tests\Concerns\BuildsBoardFixtures;
 use Tests\TestCase;
 
-class ModerationInvariantTest extends TestCase
+class PendingVisibilityTest extends TestCase
 {
     use BuildsBoardFixtures;
     use RefreshDatabase;
 
-    public function test_a_moderated_board_hides_a_new_submission(): void
+    public function test_a_board_that_hides_pending_requests_holds_a_new_submission_back(): void
     {
         Queue::fake();
 
-        $app = $this->makeApp(['require_approval' => true]);
+        $app = $this->makeApp(['hide_pending_requests' => true]);
         $store = $this->makeInstallation($app, 'store.myshopify.com', 'store@example.test');
 
         $request = app(FeatureRequestService::class)->submit(
@@ -29,14 +29,14 @@ class ModerationInvariantTest extends TestCase
             ['title' => 'Held for review', 'description' => 'Should not be public yet.'],
         );
 
-        $this->assertFalse((bool) $request->is_visible, 'A moderated board must hold a new request back.');
+        $this->assertFalse((bool) $request->is_visible, 'A board that hides pending requests must hold a new submission back.');
     }
 
-    public function test_an_open_board_publishes_immediately(): void
+    public function test_a_board_that_shows_pending_requests_publishes_immediately(): void
     {
         Queue::fake();
 
-        $app = $this->makeApp(['require_approval' => false]);
+        $app = $this->makeApp(['hide_pending_requests' => false]);
         $store = $this->makeInstallation($app, 'store.myshopify.com', 'store@example.test');
 
         $request = app(FeatureRequestService::class)->submit(
@@ -58,7 +58,7 @@ class ModerationInvariantTest extends TestCase
     {
         Queue::fake();
 
-        $app = $this->makeApp(['require_approval' => true]);
+        $app = $this->makeApp(['hide_pending_requests' => true]);
         $store = $this->makeInstallation($app, 'store.myshopify.com', 'store@example.test');
 
         app(FeatureRequestService::class)->submit(
@@ -83,7 +83,7 @@ class ModerationInvariantTest extends TestCase
     {
         Queue::fake();
 
-        $app = $this->makeApp(['require_approval' => true]);
+        $app = $this->makeApp(['hide_pending_requests' => true]);
         $store = $this->makeInstallation($app, 'store.myshopify.com', 'store@example.test');
         $this->makeInstallation($app, 'other.myshopify.com', 'other@example.test');
 
@@ -115,7 +115,7 @@ class ModerationInvariantTest extends TestCase
     {
         Queue::fake();
 
-        $app = $this->makeApp(['require_approval' => true]);
+        $app = $this->makeApp(['hide_pending_requests' => true]);
         $store = $this->makeInstallation($app, 'store.myshopify.com', 'store@example.test');
 
         $held = app(FeatureRequestService::class)->submit(

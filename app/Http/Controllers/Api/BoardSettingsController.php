@@ -6,6 +6,7 @@ use App\Enums\FeatureRequestStatus;
 use App\Http\Controllers\Controller;
 use App\Models\App;
 use App\Models\FeatureBoard;
+use App\Rules\EmailList;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -49,16 +50,25 @@ class BoardSettingsController extends Controller
             'allow_submissions' => ['sometimes', 'boolean'],
             'allow_voting' => ['sometimes', 'boolean'],
             'allow_comments' => ['sometimes', 'boolean'],
-            'require_approval' => ['sometimes', 'boolean'],
+            'hide_pending_requests' => ['sometimes', 'boolean'],
             'show_vote_counts' => ['sometimes', 'boolean'],
             'notify_on_status_change' => ['sometimes', 'boolean'],
-            // Blank clears it, which is how the heads-up is switched off.
-            'new_request_email' => ['sometimes', 'nullable', 'email', 'max:255'],
-            'notify_on_approval' => ['sometimes', 'boolean'],
+            // Comma-separated lists. Blanking the To list is how the
+            // heads-up is switched off; a cc or bcc alone sends nothing.
+            'new_request_email' => ['sometimes', 'nullable', 'string', new EmailList()],
+            'new_request_cc' => ['sometimes', 'nullable', 'string', new EmailList()],
+            'new_request_bcc' => ['sometimes', 'nullable', 'string', new EmailList()],
             'submission_limit_per_day' => ['sometimes', 'integer', 'min:0', 'max:100'],
             'visible_statuses' => ['sometimes', 'array'],
             'visible_statuses.*' => [Rule::in(FeatureRequestStatus::values())],
             'theme' => ['sometimes', 'nullable', 'array'],
+        ], [], [
+            // Otherwise a bad address reads as "the new request email
+            // contains...", which names a column rather than the field the
+            // settings screen actually shows.
+            'new_request_email' => 'notification "To" list',
+            'new_request_cc' => 'notification "Cc" list',
+            'new_request_bcc' => 'notification "Bcc" list',
         ]);
 
         $board = $app->board()->firstOrCreate([], ['title' => $app->app_name]);
@@ -113,11 +123,12 @@ class BoardSettingsController extends Controller
                 'allow_submissions',
                 'allow_voting',
                 'allow_comments',
-                'require_approval',
+                'hide_pending_requests',
                 'show_vote_counts',
                 'notify_on_status_change',
                 'new_request_email',
-                'notify_on_approval',
+                'new_request_cc',
+                'new_request_bcc',
                 'submission_limit_per_day',
                 'visible_statuses',
                 'theme',

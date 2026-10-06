@@ -145,12 +145,12 @@ class FeatureRequest extends Model
 
     /**
      * What a given store is allowed to see: everything published, plus its own
-     * submissions while they are still awaiting moderation.
+     * submissions while they are still waiting to be put on the board.
      *
-     * When the board has moderation switched off, unreviewed requests are
-     * public too. That is evaluated here rather than frozen onto each row at
-     * submission time, so turning the setting on or off fills and empties the
-     * Pending column immediately.
+     * Unless the board hides pending requests, they are public too. That is
+     * evaluated here rather than frozen onto each row at submission time, so
+     * turning the setting on or off fills and empties the Pending column
+     * immediately.
      */
     public function scopeVisibleTo(Builder $query, ?string $voterKey, ?FeatureBoard $board = null): Builder
     {
@@ -160,7 +160,7 @@ class FeatureRequest extends Model
         return $query->where(function (Builder $q) use ($voterKey, $board) {
             $q->where('is_visible', true);
 
-            if ($board && ! $board->require_approval) {
+            if ($board && ! $board->hide_pending_requests) {
                 $q->orWhere('status', FeatureRequestStatus::Pending->value);
             }
 
@@ -341,7 +341,7 @@ class FeatureRequest extends Model
         $board = $this->relationLoaded('app') ? $this->app?->board : null;
 
         return $board !== null
-            && ! $board->require_approval
+            && ! $board->hide_pending_requests
             && $this->status === FeatureRequestStatus::Pending;
     }
 
