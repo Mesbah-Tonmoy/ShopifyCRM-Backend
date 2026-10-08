@@ -112,8 +112,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/apps/{app}/smtp-providers/reencrypt', [SmtpProviderController::class, 'reencrypt'])->middleware('permission:smtp.edit');
     Route::delete('/apps/{app}/smtp-providers/{id}', [SmtpProviderController::class, 'destroy'])->middleware('permission:smtp.edit');
 
-    // SES tenants: one per Shopify store, per region. Also proxied to the app,
-    // which owns the table — see SesTenantController.
+    // SES tenants: a dedicated one per premium store, a shared free pool for the
+    // rest, per region. Also proxied to the app, which owns the table — see
+    // SesTenantController.
     Route::get('/apps/{app}/ses-tenants', [SesTenantController::class, 'index'])->middleware('permission:ses_tenants.view');
     Route::post('/apps/{app}/ses-tenants/provision-all', [SesTenantController::class, 'provisionAll'])->middleware('permission:ses_tenants.edit');
     Route::post('/apps/{app}/ses-tenants/provision-shop', [SesTenantController::class, 'provisionShop'])->middleware('permission:ses_tenants.edit');
@@ -125,6 +126,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/apps/{app}/ses-tenants/migration-status', [SesTenantController::class, 'migrationStatus'])->middleware('permission:ses_tenants.view');
     Route::delete('/apps/{app}/ses-tenants/region', [SesTenantController::class, 'destroyRegion'])->middleware('permission:ses_tenants.edit');
     Route::delete('/apps/{app}/ses-tenants', [SesTenantController::class, 'destroy'])->middleware('permission:ses_tenants.edit');
+    // Re-check one store's plan and move its tenant to match (dedicated / free pool).
+    Route::post('/apps/{app}/ses-tenants/reconcile', [SesTenantController::class, 'reconcile'])->middleware('permission:ses_tenants.edit');
+    // The daily tenant check: its schedule and recipients, recent runs, and a manual run.
+    Route::get('/apps/{app}/ses-tenants/monitor', [SesTenantController::class, 'monitor'])->middleware('permission:ses_tenants.view');
+    Route::put('/apps/{app}/ses-tenants/monitor', [SesTenantController::class, 'saveMonitor'])->middleware('permission:ses_tenants.edit');
+    Route::post('/apps/{app}/ses-tenants/monitor/run', [SesTenantController::class, 'runCheck'])->middleware('permission:ses_tenants.edit');
 
     // Feature request routes
     Route::get('/feature-requests', [FeatureRequestController::class, 'index'])->middleware('permission:feature_requests.view');
