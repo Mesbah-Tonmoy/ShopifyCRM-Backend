@@ -9,7 +9,8 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
- * SES tenants for a connected app: one tenant per Shopify store, per region.
+ * SES tenants for a connected app: a dedicated tenant per premium store, one
+ * shared free-pool tenant for every free-plan store, per region.
  *
  * A proxy, for the same reason as SmtpProviderController — the app owns the
  * table and does the sending, so a second copy here could only disagree with
@@ -35,6 +36,13 @@ class SesTenantController extends Controller
             // means the active one, matching what provisioning would do.
             'providerKey' => 'nullable|string|max:64',
             'allProviders' => 'nullable|boolean',
+            // Which rows to list: premium stores, free-plan stores, or the
+            // shared pool/platform tenants. Omitted lists all of them.
+            'type' => 'nullable|in:dedicated,free,system',
+            // Table filters, applied by the app so paging stays correct.
+            'region' => 'nullable|string|max:64',
+            'status' => 'nullable|in:paused,broken,healthy,risky',
+            'sort' => 'nullable|in:shop,bounce,complaint,sent',
         ]);
 
         return $this->forward($app, 'get', [], $validated);
@@ -218,6 +226,69 @@ class SesTenantController extends Controller
             'intent' => 'sync',
             'shop' => $validated['shop'] ?? null,
         ]);
+    }
+
+    /**
+     * Re-check one store's plan against Shopify and move its tenant to match:
+     * a dedicated tenant for premium, the free pool otherwise. The daily check
+     * does this for every store; this is for not waiting until then.
+     */
+    public function reconcile(Request $request, ConnectedApp $app)
+    {
+        $validated = $request->validate(['shop' => 'required|string|max:191']);
+
+        return $this->forward($app, 'post', [
+            'intent' => 'reconcile',
+            'shop' => $validated['shop'],
+        ]);
+    }
+
+    /**
+     * The daily tenant check's settings and its recent runs.
+     */
+    public function monitor(Request $request, ConnectedApp $app)
+    {
+        return $this->forward($app, 'post', ['intent' => 'monitor']);
+    }
+
+    /**
+     * Save when the daily check runs and who it emails. The app validates the
+     * time zone and addresses too; this only bounds the shape.
+     */
+    public function saveMonitor(Request $request, ConnectedApp $app)
+    {
+        $validated = $request->validate([
+            'enabled' => 'sometimes|boolean',
+            'runAt' => ['sometimes', 'string', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
+            'timezone' => 'sometimes|string|max:64',
+            'recipients' => 'sometimes|array|max:20',
+            'recipients.*' => 'email|max:191',
+            'realtimeAlerts' => 'sometimes|boolean',
+            'emailWhenUnchanged' => 'sometimes|boolean',
+            // Per-store bounce/complaint limits for the hourly check (percentages).
+            'reputation' => 'sometimes|array',
+            'reputation.enabled' => 'sometimes|boolean',
+            'reputation.minSends' => 'sometimes|integer|min:1|max:1000000',
+            'reputation.warnBouncePct' => 'sometimes|numeric|min:0.1|max:50',
+            'reputation.pauseBouncePct' => 'sometimes|numeric|min:0.1|max:50',
+            'reputation.warnComplaintPct' => 'sometimes|numeric|min:0.01|max:5',
+            'reputation.pauseComplaintPct' => 'sometimes|numeric|min:0.01|max:5',
+        ]);
+
+        return $this->forward($app, 'post', [
+            'intent' => 'saveMonitor',
+            'settings' => $validated,
+        ]);
+    }
+
+    /**
+     * Run the daily check now. The app starts it in the background and
+     * answers at once — it walks every store, which outlasts this proxy's
+     * timeout — so the page polls `monitor` for the outcome.
+     */
+    public function runCheck(Request $request, ConnectedApp $app)
+    {
+        return $this->forward($app, 'post', ['intent' => 'runCheck']);
     }
 
     /**

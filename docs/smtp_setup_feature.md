@@ -142,12 +142,24 @@ SMTP_CONFIGURATION_SET=   # SES only, for the env fallback
 - Deleting the active provider is allowed and drops the app to the environment
   fallback, which still sends. The response says so.
 
-## SES tenants (one per Shopify store)
+## SES tenants (by plan)
 
 Without tenants, one store with a bad list pushes the whole SES account's bounce
-rate over the threshold and pauses sending for every store. A tenant gives each
+rate over the threshold and pauses sending for every store. A tenant gives a
 store its own reputation profile, its own metrics, and its own sending status, so
 a problem store can be stopped on its own.
+
+AWS bills per tenant per month, so only paying stores get one of their own:
+
+| Store | Tenant | Row `tenantType` |
+| --- | --- | --- |
+| Premium — paid plan, trial, cancelled but inside its paid period, lifetime, or a plan granted in the admin panel | Its own **dedicated** tenant | `dedicated` |
+| Free plan | The shared **free pool** tenant, `__free__` (`FREE_POOL_SHOP`) | `free` (owns nothing in AWS) |
+| — | The free pool itself | `pool` |
+| — | Our own operational mail, `__platform__` | `platform` |
+
+See *Tenants by plan* and *Daily check* below for how stores move between the
+two and how the status is watched.
 
 Verified against the SES docs, because these shape the whole design:
 
@@ -157,7 +169,7 @@ Verified against the SES docs, because these shape the whole design:
 | Tenants are region-scoped, never replicated | A tenant exists only where it was created. Provisioning targets **one** region (the active one); a second region is opt-in, and failover can only land where a tenant exists |
 | A tenant cannot send until an identity **and** a configuration set are associated | Provisioning does the associations, not just the create. The IAM key needs `ses:CreateTenantResourceAssociation` on **both** ARNs - a policy listing only the identity fails on the configuration set |
 | Name: max 64 chars, alphanumerics/`-`/`_` only | Shop domains have dots, so the name is derived, not copied |
-| AWS charges per tenant per month | One tenant per store per region is a real line item |
+| AWS charges per tenant per month | One tenant per **premium** store per region, plus the pool and platform tenants |
 
 ### Credentials
 
@@ -183,13 +195,16 @@ deterministic, so provisioning can be re-run safely.
 
 Two triggers, both idempotent (`AlreadyExistsException` counts as success):
 
-- **New install** — `afterAuth` in `shopify.server.ts`, in the **active region
-  only**. A store that never fails over would otherwise pay monthly for a second
-  tenant it never names. A failure is logged and left to the backfill; a store
-  that cannot get a tenant is still installed.
-- **Existing stores** — "Create missing tenants" on the CRM's SES Tenants page,
-  or "Fill this region" on a specific region's card. Paged (25 stores at a time)
-  and sequential, because SES answers bursts with `TooManyRequestsException`.
+- **New install** — `afterAuth` in `shopify.server.ts` adds the store to the
+  free pool in the **active region only** (a database row, no AWS call), then
+  runs the plan check in the background, which gives a store that is already
+  premium its dedicated tenant. A failure is logged and left to the daily check;
+  a store that cannot get a tenant is still installed.
+- **Existing stores** — "Fill active region" on the CRM's SES Tenants page, or
+  "Fill this region" on a specific region's card. Premium stores get (or keep) a
+  dedicated tenant, free stores a pool row, and the pool and platform tenants are
+  created if missing. Paged (25 stores at a time) and sequential, because SES
+  answers bursts with `TooManyRequestsException`.
 
 Every provisioning call takes an optional `providerKey`. Omitted, it means the
 active region. Named, it targets that one — which is how a single store is moved
@@ -205,7 +220,7 @@ suppression scope `TENANT` makes SES reject mail that names no tenant, so "send
 untenanted" is not an option for anything.
 
 Merchant mail (auto-responses, admin notifications, resends) goes under that
-store's tenant. Our own operational mail (install/uninstall notices, spam alerts,
+store's dedicated tenant, or the free pool for a free-plan store. Our own operational mail (install/uninstall notices, spam alerts,
 billing warnings) goes under a **platform tenant** of its own, `__platform__`
 (`PLATFORM_SHOP`). It must not borrow a merchant's: pausing an abusive store
 would otherwise silence the alerts about that store. Mechanically, the difference
@@ -237,13 +252,26 @@ Trust & Safety. Two paths keep our view current:
 - `POST /api/webhooks/ses-tenant-status` — wire as an EventBridge **API
   destination** (not SNS: an SNS HTTP subscription cannot set headers, which
   would force the secret into the URL). Rule pattern
-  `{"source":["aws.ses"],"detail-type":["Sending Status Enabled","Sending Status Disabled"]}`,
-  connection with an `Authorization: Bearer <SES_EVENT_SECRET>` header.
+  `{"source":["aws.ses"],"detail-type":["Sending Status Enabled","Sending Status Disabled","Email Bounced","Email Complaint Received"]}`,
+  connection with an `Authorization: Bearer <SES_EVENT_SECRET>` header. The
+  bounce/complaint types feed *Store reputation* below.
+  The API destination must be a public URL: a local app behind a `shopify app
+  dev` tunnel gets a new URL each run, so EventBridge cannot reach it unless the
+  destination is updated. The rule's CloudWatch metrics tell the two failure
+  modes apart — `TriggeredRules` 0 means AWS emitted nothing,
+  `FailedInvocations` means it could not deliver.
 - "Sync from AWS" on the tenants page, plus `intent: sync` — the safety net for
   events that never arrive.
 
-An AWS pause also sets our local flag. An AWS *resume* does not clear a local
-pause: a reputation recovery should not undo an operator's decision.
+An AWS pause of a **dedicated** tenant also sets that store's local flag. An AWS
+*resume* does not clear a local pause: a reputation recovery should not undo an
+operator's decision. An AWS pause of the **pool** or **platform** tenant does not
+set a local flag — the `DISABLED` status already stops those sends, and lifts
+itself when AWS reinstates; a local pause would leave every free store blocked
+until someone resumed it by hand.
+
+With real-time alerts on (the default), each status change the webhook applies
+is also emailed to the daily check's recipients straight away.
 
 ### Surfaces
 
@@ -251,14 +279,22 @@ pause: a reputation recovery should not undo an operator's decision.
 | --- | --- |
 | Table | `SesTenant` in `prisma/schema.prisma` |
 | Service | `app/service/ses-tenant.server.ts` |
+| Plan check | `app/service/ses-tenant-plan.server.ts` |
+| Daily check, alerts | `app/service/ses-tenant-monitor.server.ts`, scheduled from `app/service/scheduler.server.ts` |
+| Settings, run log | `AppSetting` (`sesTenantMonitor`), `ScheduledJobRun` in `prisma/schema.prisma` |
+| Store reputation | `app/service/ses-store-stats.server.ts` (tags, counts), `app/service/ses-store-reputation.server.ts` (hourly check), `StoreMailStats` table |
 | Endpoint | `app/routes/api.ses-tenants.ts` |
 | EventBridge webhook | `app/routes/api.webhooks.ses-tenant-status.ts` |
 | CRM proxy | `backend/app/Http/Controllers/Api/SesTenantController.php` |
 | CRM page | `frontend/src/views/SesTenantsPage.vue` (route `/ses-tenants`) |
 | Permissions | `ses_tenants.view`, `ses_tenants.edit` |
 
-New app env var: `SES_EVENT_SECRET` (optional; falls back to
-`CRM_WEBHOOK_SECRET`).
+App env vars, all optional:
+
+- `SES_EVENT_SECRET` — falls back to `CRM_WEBHOOK_SECRET`.
+- `SES_TENANT_ALERT_RECIPIENTS` — comma-separated default recipients for the
+  daily check, used until someone saves recipients in the CRM.
+- `CRM_APP_URL` — the CRM frontend's base URL, for the link in alert emails.
 
 ### No on/off toggle
 
@@ -272,17 +308,21 @@ that breaks all mail.
 
 | Event | What happens to the tenants | Where |
 | --- | --- | --- |
-| Install | Created in the **active region** | `afterAuth`, `shopify.server.ts` |
-| Reinstall | Created if missing; an **automatic** pause is lifted | `afterAuth` |
-| Uninstall | **Paused** everywhere the store has a tenant, marked `system:uninstall` | `APP_UNINSTALLED`, `webhooks.tsx` |
-| Shop redact (~48h after uninstall) | **Deleted** in every region | `SHOP_REDACT` + `webhooks.shop.redact.jsx` |
+| Install | Added to the **free pool** in the active region; plan check runs in the background | `afterAuth`, `shopify.server.ts` |
+| Reinstall | Pool row created if missing; an **automatic** pause is lifted; plan check | `afterAuth` |
+| Plan becomes premium (incl. trial start, admin grant) | **Dedicated** tenant created in the active region | Subscription webhook, purchase confirmation, admin panel, daily check |
+| Plan ends (period over, expired, declined, frozen, grant removed) | Moved to the **pool**, dedicated tenant **deleted** | Subscription webhook, daily check |
+| Uninstall | Dedicated tenant **deleted**; pool row **paused**, marked `system:uninstall` | `APP_UNINSTALLED`, `webhooks.tsx` |
+| Shop redact (~48h after uninstall) | Rows **deleted**, and any tenant still left | `SHOP_REDACT` + `webhooks.shop.redact.jsx` |
 | Operator deletes | Deleted in the region shown, AWS charge stops | CRM → Delete |
-| Operator replaces | Old deleted, new one created under a new name, same region | CRM → Replace |
+| Operator replaces (any tenant, including the free pool) | New one created and linked under a new name; the row switches once it can send; then the old one is deleted (retried daily if AWS refuses) | CRM → Replace |
 | Operator adds a region | A second tenant created, nothing deleted | CRM → Add region |
 
-Uninstall pauses rather than deletes because Shopify does not redact the shop for
-another 48 hours and the merchant may reinstall inside that window; deleting
-immediately would discard the tenant's reputation history for nothing.
+Uninstall deletes a dedicated tenant straight away because Shopify cancels the
+app's subscription with the uninstall: a reinstall starts on the free plan, and
+if it comes back premium the plan check recreates the tenant under the same
+deterministic name. The pool row is paused rather than deleted so a reinstall
+inside the 48-hour window picks up where it left off.
 
 Reinstall lifts only pauses whose `pausedBy` starts with `system:`. An operator's
 abuse pause, or one AWS applied for reputation, survives — otherwise
@@ -305,10 +345,19 @@ page, each with a *Create tenant* button — after a delete, that list is the on
 place the store shows up.
 
 Re-creating uses the deterministic name, so it repairs rather than renames.
-*Replace* is the opt-out: it deletes the old tenant and creates one with a random
-suffix appended, for when the old tenant's history is unwanted. Rotation deletes
-first on purpose — creating the new name without removing the old would leave a
-tenant behind, invisible and still charged.
+*Replace* is the opt-out: it creates a tenant with a random suffix appended, for
+when the old tenant's history is unwanted. It is make-before-break: the old
+tenant keeps sending until the new one is created, linked and sendable, and is
+deleted only after the switch. If the new one cannot be made sendable, it is
+removed and the old one stays in use. An old tenant AWS refuses to delete is
+kept in `retiredTenantName` and retried daily, so nothing is left billing
+unnoticed.
+
+Replacing the **free pool** moves every free store at once and does not
+interrupt their mail. If AWS disabled the pool for reputation, pause the stores
+that caused it first (see *Store reputation*): a fresh tenant does not reset the
+account-level bounce and complaint rates AWS also watches, and the same mail will
+get the new tenant disabled too.
 
 ### Moving every store to another region
 
@@ -374,21 +423,143 @@ means refilling it — step 1 in the other direction. Keep the old region's
 tenants until the new one has been sending cleanly for a while; the monthly
 per-tenant charge is the price of a cheap rollback.
 
-### A store with no tenant cannot send
+### Which tenant a send uses
 
-`resolveTenantForSend` returns one of three things, and the difference decides
-what the send path does next:
+`resolveTenantForSend(shop, providerKey)` picks, in order:
+
+1. The store is paused locally → `blocked`.
+2. A **dedicated** row that SES disabled → `blocked`. A reputation verdict on
+   that store is not routed around through the pool.
+3. A **dedicated** row that is `ENABLED`/`REINSTATED` → `send` under it.
+4. Anything else — a free store, a store with no row, a premium store whose
+   tenant is `PENDING`/`ERROR`/`MISSING` → the region's **pool**: paused by an
+   operator → `blocked`; not sendable → `unavailable`; otherwise `send` under it.
+
+No `shop` (our own mail) uses the platform row the same way.
 
 | Kind | Meaning | Send path |
 | --- | --- | --- |
 | `send` | A usable tenant in this region | Sends, naming it |
-| `blocked` | A **decision** — the store is paused, or SES disabled it | Stops. Does not try another region: the same decision applies there |
-| `unavailable` | A **fault** — no row here, or the tenant is `PENDING`/`ERROR`/`MISSING` | Moves down the failover chain; another region may work |
+| `blocked` | A **decision** — the store (or the whole pool) is paused, or SES disabled the store's own tenant | Stops. Does not try another region: the same decision applies there |
+| `unavailable` | A **fault** — no pool/platform tenant here, or it is not sendable | Moves down the failover chain; another region may work |
 
 There is no "send without a tenant" outcome. Under suppression scope `TENANT`,
-SES rejects untenanted mail outright, so a store whose tenant is missing in every
-region simply cannot send until it has one. That is what makes **Stores without
-tenants** on the CRM page an outage list, not a tidiness list.
+SES rejects untenanted mail outright. So the pool and platform tenants missing is
+an outage; a premium store missing its dedicated tenant is degraded (it sends
+under the pool). Both appear in the CRM's "needs attention" list.
+
+## Tenants by plan
+
+`app/service/ses-tenant-plan.server.ts` keeps each store's tenant in line with its
+plan. "Premium" is whatever `getSubscription` returns as not free — the same
+answer that decides the store's features — so a cancelled store keeps its
+dedicated tenant exactly as long as it keeps its paid features.
+
+| Trigger | When |
+| --- | --- |
+| `APP_SUBSCRIPTIONS_UPDATE` | `ACTIVE` (incl. trial start) is premium without a lookup; every other status is checked live |
+| Purchase confirmation page | The merchant lands back after approving a charge |
+| Install / re-auth | In the background after `afterAuth` |
+| Admin panel plan grant set / reviewed / removed | Immediately |
+| CRM → **Check plan** on a row | On demand |
+| Daily check | Every store, every day — catches what events miss, including a cancelled plan's period running out, which sends no webhook |
+
+The plan lookup is **strict**: `getSubscription(auth, { strict: true })` throws on
+a GraphQL error instead of answering FREE, because here FREE deletes a tenant.
+A failed lookup changes nothing and is reported.
+
+Downgrade switches the row to the pool **first**, then deletes the dedicated
+tenant, so the store keeps sending throughout. If AWS refuses, the old name stays
+in `retiredTenantName`, the CRM marks the row "old tenant pending delete", and the
+daily check retries. A store SES had disabled is kept paused locally after the
+downgrade, so dropping to free cannot clear a reputation pause.
+
+Upgrade creates the dedicated tenant under the deterministic name. Until it is
+sendable, the store sends under the pool.
+
+## Daily check
+
+Once a day, at a time set in the CRM (**SES Tenants → Daily check**; default
+09:00 Asia/Dhaka), the app:
+
+1. Makes sure the pool and platform tenants exist and are linked in the active
+   region.
+2. Runs the plan check for every installed store.
+3. Retries deleting tenants given up on downgrade.
+4. Syncs every tenant from AWS (the same as "Sync from AWS", which stays).
+
+If anything changed or failed, the recipients get one email: status changes
+(before → after), plan moves, and problems, with changes to the pool or platform
+tenant flagged at the top as **ACTION NEEDED**. A check that fails also emails.
+"Send the daily email even when nothing changed" turns it into a heartbeat.
+
+Scheduling: every app instance ticks once a minute. The run is due once the
+local time passes the configured time, unless a scheduled run already happened
+today at or after that time — so moving the time later after today's run (09:00
+→ 16:00) runs again at 16:00, and moving it earlier does not repeat the day.
+Manual runs do not count. The `ScheduledJobRun` row (`runKey` = local date and
+time slot, unique per job) is the lock, so only one instance runs it. If the app
+is down at the set time, the run happens when it is back, the same day.
+
+**Run now** starts it in the background; the panel polls and shows the last ten
+runs. Alerts go out through the platform SMTP chain under the platform tenant,
+falling back to Mailgun when the chain itself cannot send.
+
+| Setting | Meaning |
+| --- | --- |
+| Run every day | Off stops the scheduled run; Run now still works |
+| Time, time zone | Local time the run becomes due |
+| Recipients | Up to 20 |
+| Real-time alerts | Email each AWS status change from EventBridge as it arrives |
+| Email when unchanged | Daily email even with nothing to report |
+| Store reputation | See below |
+
+## Store reputation (hourly)
+
+Every free store sends under the one pool tenant, so AWS judges — and disables —
+the pool on the free stores' *combined* bounce and complaint rates. One store
+with a bought list can take every free store's mail down. The app watches each
+store's own rates and stops it first.
+
+How a store's rates are known:
+
+1. Merchant mail through SES carries `X-SES-MESSAGE-TAGS: store=<Stores.id>`
+   (tag values cannot contain dots, so not the domain).
+2. The app counts recipients per store per hour as mail is accepted
+   (`StoreMailStats.sent`).
+3. SES reports bounces and complaints to EventBridge with the message's tags; the
+   webhook counts **permanent** bounces and complaints against the tagged store.
+
+Every hour (one instance, locked per hour) each store's last 7 days are compared
+with the limits set in the CRM (Daily check → Store reputation):
+
+| Store | Over the warning limit | Over the pause limit |
+| --- | --- | --- |
+| Free | Email (once a day per store) | **Paused** (only that store; `pausedBy: reputation`) + email |
+| Premium | Email | Email only — its mail only hurts its own tenant |
+
+Defaults: warn at 2% bounce / 0.05% complaints, pause at 4% / 0.08%, ignoring
+stores under 50 recipients. A pause also needs at least 3 hard bounces or 2
+complaints behind the rate, so one spam click cannot pause a small store.
+Bounces and complaints are counted in the hour the mail was sent, not when the
+report arrived — inside AWS's review line of 5% / 0.1%. A reinstall
+does not lift a reputation pause. Resuming in the CRM restarts the store's
+7-day window, so a reviewed store is judged on what it sends next. The tenants
+table shows each store's 7-day numbers (or "since resume"), coloured against the
+limits, with "(too few to judge)" under the minimum. Status → **At risk** lists
+only stores over a warning or pause limit, and Sort orders by bounce rate,
+complaint rate or volume. Filtering, sorting and paging (25–200 stores per page)
+all happen in the app, so they cover every store, not just the loaded page.
+
+**AWS setup this needs**, per region:
+
+1. On the SES **configuration set** used for sending, add an **event destination**
+   of type **Amazon EventBridge** (default event bus) with event types
+   **Bounce** and **Complaint**.
+2. Add `Email Bounced` and `Email Complaint Received` to the EventBridge rule's
+   `detail-type` list (see *AWS-initiated pauses*). Same API destination.
+
+Without these, sends are counted but no bounces arrive, so every store reads 0%.
 
 ## Credential encryption and key rotation
 
