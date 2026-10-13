@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Installation;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 
 class InstallationController extends Controller
@@ -17,10 +18,34 @@ class InstallationController extends Controller
     ];
 
     /**
+     * The timezone the caller's date_from / date_to are calendar days in.
+     *
+     * The list renders install dates in the browser's timezone, so a day in
+     * the filter has to mean the same day on screen. Falls back to the app
+     * timezone, which is what callers that send no timezone always got.
+     */
+    protected function filterTimezone(Request $request): string
+    {
+        $timezone = (string) $request->get('timezone', '');
+
+        return in_array($timezone, timezone_identifiers_list(), true)
+            ? $timezone
+            : (string) config('app.timezone', 'UTC');
+    }
+
+    /**
      * Get all installations with filters
      */
     public function index(Request $request)
     {
+        // Only the date bounds are validated: they are parsed rather than
+        // handed straight to SQL, so a malformed one would throw instead of
+        // simply matching nothing.
+        $request->validate([
+            'date_from' => ['nullable', 'date'],
+            'date_to' => ['nullable', 'date'],
+        ]);
+
         $perPage = $request->get('per_page', 15);
         $query = Installation::with('app');
 
@@ -47,15 +72,37 @@ class InstallationController extends Controller
          * installed_at is nullable - older rows and webhooks that omit it -
          * so those fall back to created_at rather than dropping out of every
          * range.
+         *
+         * The bounds are calendar days in the caller's timezone, converted
+         * here to the instants that bracket them. Comparing DATE() instead
+         * would compare UTC days against days the browser rendered locally:
+         * east of UTC that puts every late-evening install a day later on
+         * screen than in the filter, so a range ending the 12th appeared to
+         * include the 13th - and silently dropped the first day's evening.
          */
         $installDate = 'COALESCE(installations.installed_at, installations.created_at)';
+        $timezone = $this->filterTimezone($request);
 
         if ($request->filled('date_from')) {
-            $query->whereRaw("DATE({$installDate}) >= ?", [$request->date_from]);
+            $query->whereRaw("{$installDate} >= ?", [
+                CarbonImmutable::parse($request->date_from, $timezone)
+                    ->startOfDay()
+                    ->utc()
+                    ->toDateTimeString(),
+            ]);
         }
 
         if ($request->filled('date_to')) {
-            $query->whereRaw("DATE({$installDate}) <= ?", [$request->date_to]);
+            // Half-open on purpose: "before midnight at the start of the next
+            // day" covers the whole end day without depending on the column's
+            // sub-second precision.
+            $query->whereRaw("{$installDate} < ?", [
+                CarbonImmutable::parse($request->date_to, $timezone)
+                    ->addDay()
+                    ->startOfDay()
+                    ->utc()
+                    ->toDateTimeString(),
+            ]);
         }
 
         // Filter by plan name

@@ -187,6 +187,82 @@ class InstallationListTest extends TestCase
             ->assertJsonPath('data.data.0.store_url', 'legacy.myshopify.com');
     }
 
+    /**
+     * Regression: the range compared UTC calendar days against days the
+     * browser had rendered in the viewer's zone. East of UTC that put every
+     * late-evening install a day later on screen than in the filter, so Oct
+     * 6-12 appeared to include the 13th while quietly dropping the 6th.
+     */
+    public function test_the_range_reads_the_dates_in_the_callers_timezone(): void
+    {
+        // 02:30 on the 13th in Dhaka; 20:30 on the 12th in UTC.
+        $endOfRange = $this->install($this->appA, 'late', 'Free', 'Basic');
+        $endOfRange->forceFill(['installed_at' => '2026-10-12 20:30:00'])->save();
+
+        // 01:00 on the 6th in Dhaka; 19:00 on the 5th in UTC.
+        $startOfRange = $this->install($this->appA, 'early', 'Free', 'Basic');
+        $startOfRange->forceFill(['installed_at' => '2026-10-05 19:00:00'])->save();
+
+        $stores = collect($this->actingAs($this->user)->getJson('/api/installations?' . http_build_query([
+            'app_id' => $this->appA->id,
+            'date_from' => '2026-10-06',
+            'date_to' => '2026-10-12',
+            'timezone' => 'Asia/Dhaka',
+        ]))->assertOk()->json('data.data'))->pluck('store_url');
+
+        // Reads as the 13th in Dhaka, so it is outside a range ending the 12th.
+        $this->assertNotContains('late.myshopify.com', $stores);
+        // Reads as the 6th in Dhaka, so it belongs in a range starting the 6th.
+        $this->assertContains('early.myshopify.com', $stores);
+    }
+
+    public function test_the_same_range_in_utc_keeps_the_utc_days(): void
+    {
+        $install = $this->install($this->appA, 'late', 'Free', 'Basic');
+        $install->forceFill(['installed_at' => '2026-10-12 20:30:00'])->save();
+
+        $this->actingAs($this->user)->getJson('/api/installations?' . http_build_query([
+            'app_id' => $this->appA->id,
+            'date_from' => '2026-10-06',
+            'date_to' => '2026-10-12',
+            'timezone' => 'UTC',
+        ]))
+            ->assertOk()
+            ->assertJsonPath('data.total', 1)
+            ->assertJsonPath('data.data.0.store_url', 'late.myshopify.com');
+    }
+
+    public function test_the_end_of_the_range_is_inclusive_to_the_last_second(): void
+    {
+        $install = $this->install($this->appA, 'midnight', 'Free', 'Basic');
+        $install->forceFill(['installed_at' => '2026-10-12 23:59:59'])->save();
+
+        $this->actingAs($this->user)->getJson('/api/installations?' . http_build_query([
+            'app_id' => $this->appA->id,
+            'date_from' => '2026-10-12',
+            'date_to' => '2026-10-12',
+            'timezone' => 'UTC',
+        ]))
+            ->assertOk()
+            ->assertJsonPath('data.total', 1);
+    }
+
+    public function test_a_malformed_date_is_rejected_rather_than_erroring(): void
+    {
+        $this->actingAs($this->user)->getJson('/api/installations?date_from=not-a-date')
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('date_from');
+    }
+
+    public function test_an_unknown_timezone_falls_back_instead_of_erroring(): void
+    {
+        $this->actingAs($this->user)->getJson('/api/installations?' . http_build_query([
+            'date_from' => '2026-01-01',
+            'date_to' => '2036-01-01',
+            'timezone' => 'Moon/Base',
+        ]))->assertOk()->assertJsonPath('data.total', 5);
+    }
+
     public function test_sorting_by_app_name_still_works(): void
     {
         $response = $this->actingAs($this->user)

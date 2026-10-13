@@ -342,6 +342,26 @@ class WebhookController extends Controller
                 'app_plan' => $validated['app_plan'],
             ]);
 
+            // A subscription the merchant declined, never answered (expired),
+            // or has not approved yet (pending) never became the store's plan.
+            // Recording it would overwrite the plan the store is actually on,
+            // and post a false "Plan Changed" to Slack. Acknowledged with 200
+            // so the app does not retry.
+            $status = strtoupper($validated['app_plan']['status'] ?? '');
+            if (in_array($status, ['DECLINED', 'EXPIRED', 'PENDING'], true)) {
+                Log::channel(self::LOG)->info('Plan change webhook ignored: subscription never became active', [
+                    'request_id' => $requestId,
+                    'shop_domain' => $validated['shop_domain'],
+                    'status' => $status,
+                    'plan_name' => $validated['app_plan']['plan_name'] ?? null,
+                ]);
+
+                return response()->json([
+                    'success' => true,
+                    'message' => "Ignored: a {$status} subscription is not a plan change",
+                ], 200);
+            }
+
             // Find app
             $app = App::where('app_url', $validated['app_url'])->first();
 
@@ -391,11 +411,11 @@ class WebhookController extends Controller
             // Notify Slack of the plan change, if enabled
             try {
                 $planName = $validated['app_plan']['plan_name'] ?? 'Unknown';
-                $status = strtoupper($validated['app_plan']['status'] ?? '');
 
                 $headingText = match ($status) {
                     'CANCELLED' => ':x: *Plan Cancelled*',
                     'ACTIVE' => ':tada: *New Plan Activated*',
+                    'FROZEN' => ':ice_cube: *Plan Frozen*',
                     default => ':moneybag: *Plan Changed*',
                 };
                 $heading = "{$headingText} ({$app->app_name})";
