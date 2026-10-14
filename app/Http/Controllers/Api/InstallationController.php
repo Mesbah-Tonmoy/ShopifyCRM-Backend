@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Http\Concerns\FiltersByLocalDateRange;
 use App\Http\Controllers\Controller;
 use App\Models\Installation;
 use Carbon\CarbonImmutable;
@@ -9,6 +10,8 @@ use Illuminate\Http\Request;
 
 class InstallationController extends Controller
 {
+    use FiltersByLocalDateRange;
+
     /**
      * Columns the installation list can be sorted by.
      */
@@ -18,36 +21,127 @@ class InstallationController extends Controller
     ];
 
     /**
-     * The timezone the caller's date_from / date_to are calendar days in.
-     *
-     * The list renders install dates in the browser's timezone, so a day in
-     * the filter has to mean the same day on screen. Falls back to the app
-     * timezone, which is what callers that send no timezone always got.
-     */
-    protected function filterTimezone(Request $request): string
-    {
-        $timezone = (string) $request->get('timezone', '');
-
-        return in_array($timezone, timezone_identifiers_list(), true)
-            ? $timezone
-            : (string) config('app.timezone', 'UTC');
-    }
-
-    /**
      * Get all installations with filters
      */
     public function index(Request $request)
     {
-        // Only the date bounds are validated: they are parsed rather than
-        // handed straight to SQL, so a malformed one would throw instead of
-        // simply matching nothing.
+        $this->validateFilters($request);
+
+        $installations = $this->filtered($request)
+            ->with('app')
+            ->paginate($request->get('per_page', 15));
+
+        return response()->json([
+            'success' => true,
+            'data' => $installations,
+        ]);
+    }
+
+    /**
+     * Download every installation the current filters match, as CSV.
+     *
+     * Built from the same query as the list rather than from the rows on
+     * screen: exporting a page of results is almost never what someone who
+     * has just filtered a few thousand stores actually wants.
+     *
+     * Streamed and read in chunks so the response starts immediately and the
+     * row count does not decide how much memory this takes.
+     */
+    public function export(Request $request)
+    {
+        $this->validateFilters($request);
+
+        $timezone = $this->filterTimezone($request);
+        $query = $this->filtered($request)->with('app');
+
+        $filename = 'installations_export_' . CarbonImmutable::now($timezone)->format('Y-m-d') . '.csv';
+
+        return response()->streamDownload(function () use ($query, $timezone) {
+            // A large export can outrun the default limit, and there is no
+            // partial CSV worth keeping if it is cut off halfway.
+            set_time_limit(0);
+
+            $handle = fopen('php://output', 'wb');
+
+            // Excel reads a bare UTF-8 CSV as the system's legacy code page,
+            // which mangles any non-ASCII store name. The BOM is what makes it
+            // open the file as UTF-8.
+            fwrite($handle, "\xEF\xBB\xBF");
+
+            // escape: '' gives RFC 4180 quoting. PHP's default also treats
+            // backslash as an escape character, which writes a field holding
+            // one in a way Excel then reads back wrong - and in 8.4 leaving
+            // the argument out is deprecated besides.
+            $write = fn (array $row) => fputcsv($handle, $row, ',', '"', '');
+
+            $write([
+                'App', 'Store', 'Store URL', 'Email', 'Plan',
+                'Shopify Plan', 'Status', 'Installs', 'Installed',
+            ]);
+
+            // lazy() keeps the caller's sort order, unlike lazyById(); the
+            // id tiebreaker added in filtered() is what stops a row being
+            // skipped or repeated across chunk boundaries.
+            foreach ($query->lazy(500) as $installation) {
+                $write([
+                    $installation->app?->app_name ?? 'N/A',
+                    $installation->store_name,
+                    $installation->store_url,
+                    $installation->email,
+                    $this->planName($installation->app_plan),
+                    $installation->shopify_plan ?: 'N/A',
+                    $installation->is_active ? 'Installed' : 'Uninstalled',
+                    $installation->install_count,
+                    $installation->installed_at
+                        ? $installation->installed_at->timezone($timezone)->format('M d, Y')
+                        : 'N/A',
+                ]);
+            }
+
+            fclose($handle);
+        }, $filename, [
+            'Content-Type' => 'text/csv; charset=UTF-8',
+        ]);
+    }
+
+    /**
+     * The plan name as the list shows it.
+     *
+     * app_plan is usually {"plan_name": ...}, but older rows hold a bare
+     * string, so both shapes are read rather than reporting "No plan" for a
+     * store that is plainly on one.
+     */
+    protected function planName(mixed $appPlan): string
+    {
+        if (is_array($appPlan)) {
+            return (string) ($appPlan['plan_name'] ?? 'No plan');
+        }
+
+        return filled($appPlan) ? (string) $appPlan : 'No plan';
+    }
+
+    /**
+     * Only the date bounds are validated: they are parsed rather than handed
+     * straight to SQL, so a malformed one would throw instead of simply
+     * matching nothing.
+     */
+    protected function validateFilters(Request $request): void
+    {
         $request->validate([
             'date_from' => ['nullable', 'date'],
             'date_to' => ['nullable', 'date'],
         ]);
+    }
 
-        $perPage = $request->get('per_page', 15);
-        $query = Installation::with('app');
+    /**
+     * The filtered, sorted installation query behind both the list and the
+     * export, so the two cannot drift apart.
+     *
+     * @return \Illuminate\Database\Eloquent\Builder<Installation>
+     */
+    protected function filtered(Request $request)
+    {
+        $query = Installation::query();
 
         // Filter by app
         if ($request->has('app_id')) {
@@ -73,37 +167,16 @@ class InstallationController extends Controller
          * so those fall back to created_at rather than dropping out of every
          * range.
          *
-         * The bounds are calendar days in the caller's timezone, converted
-         * here to the instants that bracket them. Comparing DATE() instead
-         * would compare UTC days against days the browser rendered locally:
-         * east of UTC that puts every late-evening install a day later on
-         * screen than in the filter, so a range ending the 12th appeared to
-         * include the 13th - and silently dropped the first day's evening.
+         * The bounds are calendar days in the caller's timezone; see
+         * FiltersByLocalDateRange for why that matters.
          */
-        $installDate = 'COALESCE(installations.installed_at, installations.created_at)';
-        $timezone = $this->filterTimezone($request);
-
-        if ($request->filled('date_from')) {
-            $query->whereRaw("{$installDate} >= ?", [
-                CarbonImmutable::parse($request->date_from, $timezone)
-                    ->startOfDay()
-                    ->utc()
-                    ->toDateTimeString(),
-            ]);
-        }
-
-        if ($request->filled('date_to')) {
-            // Half-open on purpose: "before midnight at the start of the next
-            // day" covers the whole end day without depending on the column's
-            // sub-second precision.
-            $query->whereRaw("{$installDate} < ?", [
-                CarbonImmutable::parse($request->date_to, $timezone)
-                    ->addDay()
-                    ->startOfDay()
-                    ->utc()
-                    ->toDateTimeString(),
-            ]);
-        }
+        $this->whereLocalDateBetween(
+            $query,
+            $request,
+            'COALESCE(installations.installed_at, installations.created_at)',
+            $request->input('date_from'),
+            $request->input('date_to'),
+        );
 
         // Filter by plan name
         if ($request->has('plan_name')) {
@@ -172,12 +245,10 @@ class InstallationController extends Controller
             $query->orderBy("installations.{$sortBy}", $sortOrder);
         }
 
-        $installations = $query->paginate($perPage);
-
-        return response()->json([
-            'success' => true,
-            'data' => $installations,
-        ]);
+        // Every sortable column has ties, and a tie left to the database can
+        // come back in a different order per query - which drops or repeats
+        // rows between pages, and between the chunks the export reads.
+        return $query->orderBy('installations.id');
     }
 
     /**

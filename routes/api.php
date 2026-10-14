@@ -63,12 +63,11 @@ Route::middleware('auth:sanctum')->group(function () {
     
     // Installations routes
     Route::get('/installations/filters', [InstallationController::class, 'filters'])->middleware('permission:installations.view');
+    // Takes the same filters as the list and streams every matching row.
+    Route::get('/installations/export', [InstallationController::class, 'export'])->middleware('permission:installations.export');
     Route::get('/installations', [InstallationController::class, 'index'])->middleware('permission:installations.view');
     // Installations are written only by the Shopify apps, through the
     // webhooks below; the dashboard reads them and never edits them.
-    
-    // Export route (assuming this exists or will be added)
-    // Route::get('/installations/export', [InstallationController::class, 'export'])->middleware('permission:installations.export');
     
     // Email Templates routes
     Route::get('/email-templates/filters', [EmailTemplateController::class, 'filters'])->middleware('permission:email_templates.view');

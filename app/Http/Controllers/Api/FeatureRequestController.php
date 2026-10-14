@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Enums\FeatureRequestStatus;
+use App\Http\Concerns\FiltersByLocalDateRange;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\Admin\FeatureRequestResource;
 use App\Models\App;
@@ -16,6 +17,8 @@ use Illuminate\Validation\Rule;
 
 class FeatureRequestController extends Controller
 {
+    use FiltersByLocalDateRange;
+
     public function __construct(protected FeatureRequestService $requests)
     {
     }
@@ -34,6 +37,9 @@ class FeatureRequestController extends Controller
             'is_visible' => ['nullable', 'boolean'],
             'date_from' => ['nullable', 'date'],
             'date_to' => ['nullable', 'date'],
+            // Optional: the zone date_from / date_to are calendar days in.
+            // An unknown value falls back to the app timezone.
+            'timezone' => ['nullable', 'string', 'max:64'],
             'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
         ]);
 
@@ -295,6 +301,10 @@ class FeatureRequestController extends Controller
     /**
      * Shared filter pipeline for the list and per-app endpoints.
      *
+     * The date bounds are calendar days in the caller's timezone rather than
+     * UTC days, so a range means the same thing here as the dates the list
+     * renders - see FiltersByLocalDateRange.
+     *
      * @param  array<string, mixed>  $filters
      */
     protected function filtered(Request $request, array $filters)
@@ -303,8 +313,13 @@ class FeatureRequestController extends Controller
             ->when($filters['app_id'] ?? null, fn ($query, $appId) => $query->forApp($appId))
             ->when($filters['status'] ?? null, fn ($query, $status) => $query->withStatus($status))
             ->when($request->filled('is_visible'), fn ($query) => $query->where('is_visible', $request->boolean('is_visible')))
-            ->when($filters['date_from'] ?? null, fn ($query, $from) => $query->whereDate('created_at', '>=', $from))
-            ->when($filters['date_to'] ?? null, fn ($query, $to) => $query->whereDate('created_at', '<=', $to))
+            ->tap(fn ($query) => $this->whereLocalDateBetween(
+                $query,
+                $request,
+                'feature_requests.created_at',
+                $filters['date_from'] ?? null,
+                $filters['date_to'] ?? null,
+            ))
             ->search($filters['search'] ?? null);
     }
 }
