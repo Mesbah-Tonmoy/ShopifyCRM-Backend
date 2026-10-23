@@ -119,7 +119,22 @@ class WebhookController extends Controller
                 $attributes['shopify_plan'] = $validated['shopify_plan'];
             }
 
-            if (!empty($validated['installed_at'])) {
+            /*
+             * The install date is a fact about the store, not about this
+             * delivery: it is set when the row is created, again when a store
+             * that had uninstalled comes back, and to backfill a row that
+             * never got one. A repeat delivery must never move it.
+             *
+             * Apps re-send this webhook outside a real install - on every
+             * authentication, for instance - and some send installed_at as
+             * the moment of the call rather than the store's actual install
+             * date, which walked the date forward every time.
+             */
+            $mayWriteInstallDate = $isNewInstall
+                || $isReinstall
+                || blank($existing?->installed_at);
+
+            if ($mayWriteInstallDate && !empty($validated['installed_at'])) {
                 $attributes['installed_at'] = $validated['installed_at'];
             }
 
@@ -128,6 +143,13 @@ class WebhookController extends Controller
             // which is what happened on every duplicate webhook before.
             if ($isNewInstall || $isReinstall) {
                 $attributes['app_plan'] = ['plan_name' => 'Free'];
+            }
+
+            // Stated rather than left to the column default, so the model - and
+            // the log line below, which is how this table gets debugged - knows
+            // the count without reading the row back.
+            if ($isNewInstall) {
+                $attributes['install_count'] = 1;
             }
 
             // Create or update installation

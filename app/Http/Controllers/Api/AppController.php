@@ -106,30 +106,7 @@ class AppController extends Controller
 
             $this->syncPricingData($app, $data);
 
-            // Sync stores/installations
-            if (isset($data['stores']) && is_array($data['stores'])) {
-                foreach ($data['stores'] as $store) {
-                    Installation::updateOrCreate(
-                        [
-                            'app_id' => $app->id,
-                            'store_url' => $store['shopDomain'],
-                        ],
-                        [
-                            'store_name' => $store['name'],
-                            'email' => $store['email'],
-                            'shop_owner_name' => null,
-                            'currency' => $store['currencyCode'],
-                            'shopify_plan' => $store['shopifyPlan'],
-                            'app_plan' => ['plan_name' => $store['appPlan']],
-                            'plan_started_at' => isset($store['planStartedAt']) ? $store['planStartedAt'] : null,
-                            'plan_expires_at' => isset($store['planExpiresAt']) ? $store['planExpiresAt'] : null,
-                            'installed_at' => isset($store['installedAt']) ? $store['installedAt'] : null,
-                            'is_active' => $store['isActive'],
-                            'install_count' => 1,
-                        ]
-                    );
-                }
-            }
+            $this->syncStores($app, $data);
 
             // Seed default email templates for the app
             \Database\Seeders\EmailTemplateSeeder::seedTemplatesForApp($app);
@@ -209,30 +186,7 @@ class AppController extends Controller
 
             $this->syncPricingData($app, $data);
 
-            // Sync stores/installations
-            if (isset($data['stores']) && is_array($data['stores'])) {
-                foreach ($data['stores'] as $store) {
-                    Installation::updateOrCreate(
-                        [
-                            'app_id' => $app->id,
-                            'store_url' => $store['shopDomain'],
-                        ],
-                        [
-                            'store_name' => $store['name'],
-                            'email' => $store['email'],
-                            'shop_owner_name' => null,
-                            'currency' => $store['currencyCode'],
-                            'shopify_plan' => $store['shopifyPlan'],
-                            'app_plan' => ['plan_name' => $store['appPlan']],
-                            'plan_started_at' => isset($store['planStartedAt']) ? $store['planStartedAt'] : null,
-                            'plan_expires_at' => isset($store['planExpiresAt']) ? $store['planExpiresAt'] : null,
-                            'installed_at' => isset($store['installedAt']) ? $store['installedAt'] : null,
-                            'is_active' => $store['isActive'],
-                            'install_count' => 1,
-                        ]
-                    );
-                }
-            }
+            $this->syncStores($app, $data);
 
             // Reload app with relationships
             $app->loadCount(['installations', 'activeInstallations']);
@@ -250,6 +204,74 @@ class AppController extends Controller
                 'success' => false,
                 'message' => 'Failed to resync app: ' . $e->getMessage(),
             ], 500);
+        }
+    }
+
+    /**
+     * Write the stores an app reported into installations.
+     *
+     * A sync is a refresh of an existing record, not a re-creation of it, so
+     * it fills gaps and updates what the app is authoritative for, and leaves
+     * everything else alone. Writing the whole row every time - which is what
+     * this did - meant each sync nulled the owner name the install webhook had
+     * recorded, reset install_count to 1 over any reinstall history, and moved
+     * installed_at to whatever the app reported at that moment.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    protected function syncStores(App $app, array $data): void
+    {
+        if (! isset($data['stores']) || ! is_array($data['stores'])) {
+            return;
+        }
+
+        foreach ($data['stores'] as $store) {
+            if (blank($store['shopDomain'] ?? null)) {
+                continue;
+            }
+
+            $installation = Installation::firstOrNew([
+                'app_id' => $app->id,
+                'store_url' => $store['shopDomain'],
+            ]);
+
+            // Present-only: a field the app left out keeps the value we hold
+            // rather than being blanked by this sync.
+            foreach ([
+                'store_name' => 'name',
+                'email' => 'email',
+                'currency' => 'currencyCode',
+                'shopify_plan' => 'shopifyPlan',
+                'plan_started_at' => 'planStartedAt',
+                'plan_expires_at' => 'planExpiresAt',
+            ] as $column => $key) {
+                if (filled($store[$key] ?? null)) {
+                    $installation->{$column} = $store[$key];
+                }
+            }
+
+            if (filled($store['appPlan'] ?? null)) {
+                $installation->app_plan = ['plan_name' => $store['appPlan']];
+            }
+
+            if (array_key_exists('isActive', $store)) {
+                $installation->is_active = (bool) $store['isActive'];
+            }
+
+            // Filled when missing, never overwritten: the date a store first
+            // installed does not change, and an app that reports it wrongly
+            // should not be able to rewrite history on every sync.
+            if (blank($installation->installed_at) && filled($store['installedAt'] ?? null)) {
+                $installation->installed_at = $store['installedAt'];
+            }
+
+            // Counted by the install webhook, which is the only thing that can
+            // see a reinstall happen.
+            if (! $installation->exists) {
+                $installation->install_count = 1;
+            }
+
+            $installation->save();
         }
     }
 
