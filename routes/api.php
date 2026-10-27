@@ -11,6 +11,7 @@ use App\Http\Controllers\Api\RoleController;
 use App\Http\Controllers\Api\PermissionController;
 use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\PricingPlanController;
+use App\Http\Controllers\Api\GoogleChatSpaceController;
 use App\Http\Controllers\Api\IntegrationController;
 use App\Http\Controllers\Api\MailProviderController;
 use App\Http\Controllers\Api\SmtpProviderController;
@@ -91,6 +92,12 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Integrations routes
     Route::get('/integrations', [IntegrationController::class, 'index'])->middleware('permission:integrations.view');
+    Route::get('/integrations/google-chat/options', [GoogleChatSpaceController::class, 'options'])->middleware('permission:integrations.view');
+    Route::post('/integrations/google-chat/test', [GoogleChatSpaceController::class, 'test'])->middleware('permission:integrations.edit');
+    Route::get('/integrations/google-chat/spaces', [GoogleChatSpaceController::class, 'index'])->middleware('permission:integrations.view');
+    Route::post('/integrations/google-chat/spaces', [GoogleChatSpaceController::class, 'store'])->middleware('permission:integrations.edit');
+    Route::put('/integrations/google-chat/spaces/{space}', [GoogleChatSpaceController::class, 'update'])->middleware('permission:integrations.edit');
+    Route::delete('/integrations/google-chat/spaces/{space}', [GoogleChatSpaceController::class, 'destroy'])->middleware('permission:integrations.edit');
     Route::put('/integrations/{key}', [IntegrationController::class, 'update'])->middleware('permission:integrations.edit');
 
     // Email providers for the CRM's own mail (SendGrid, Mailtrap, Amazon SES), one active at a time.

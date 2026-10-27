@@ -6,8 +6,11 @@ use App\Http\Controllers\Controller;
 use App\Models\App;
 use App\Models\Installation;
 use App\Services\EmailTemplateService;
+use App\Services\GoogleChatService;
 use App\Services\SlackService;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use App\Events\WebhookReceived;
 
@@ -87,91 +90,7 @@ class WebhookController extends Controller
                 ], 404);
             }
 
-            // What kind of install is this? Decided before the write, because
-            // updateOrCreate() erases the distinction.
-            $existing = Installation::where('app_id', $app->id)
-                ->where('store_url', $validated['shop_domain'])
-                ->first();
-
-            $isNewInstall = $existing === null;
-            $isReinstall = $existing !== null && !$existing->is_active;
-
-            $attributes = [
-                'store_name' => $validated['name'],
-                'email' => $validated['email'],
-                'is_active' => true,
-            ];
-
-            // Optional fields are written only when the payload carries them,
-            // so a repeat delivery with a thinner payload cannot erase what we
-            // already recorded for the store.
-            if (!empty($validated['shop_owner_name'])) {
-                $attributes['shop_owner_name'] = $validated['shop_owner_name'];
-            }
-
-            if (!empty($validated['currency_code'])) {
-                $attributes['currency'] = $validated['currency_code'];
-            } elseif ($isNewInstall) {
-                $attributes['currency'] = 'USD';
-            }
-
-            if (!empty($validated['shopify_plan'])) {
-                $attributes['shopify_plan'] = $validated['shopify_plan'];
-            }
-
-            /*
-             * The install date is a fact about the store, not about this
-             * delivery: it is set when the row is created, again when a store
-             * that had uninstalled comes back, and to backfill a row that
-             * never got one. A repeat delivery must never move it.
-             *
-             * Apps re-send this webhook outside a real install - on every
-             * authentication, for instance - and some send installed_at as
-             * the moment of the call rather than the store's actual install
-             * date, which walked the date forward every time.
-             */
-            $mayWriteInstallDate = $isNewInstall
-                || $isReinstall
-                || blank($existing?->installed_at);
-
-            if ($mayWriteInstallDate && !empty($validated['installed_at'])) {
-                $attributes['installed_at'] = $validated['installed_at'];
-            }
-
-            // A new install - and a genuine reinstall - starts on Free. A
-            // repeat delivery must not reset a paying merchant back to Free,
-            // which is what happened on every duplicate webhook before.
-            if ($isNewInstall || $isReinstall) {
-                $attributes['app_plan'] = ['plan_name' => 'Free'];
-            }
-
-            // Stated rather than left to the column default, so the model - and
-            // the log line below, which is how this table gets debugged - knows
-            // the count without reading the row back.
-            if ($isNewInstall) {
-                $attributes['install_count'] = 1;
-            }
-
-            // Create or update installation
-            $installation = Installation::updateOrCreate(
-                [
-                    'app_id' => $app->id,
-                    'store_url' => $validated['shop_domain'],
-                ],
-                $attributes
-            );
-
-            if ($installation->wasRecentlyCreated && empty($installation->installed_at)) {
-                $installation->installed_at = $validated['installed_at'] ?? now();
-                $installation->save();
-            }
-
-            // Count real reinstalls only. Counting every inbound webhook (the
-            // previous behaviour) inflated install_count on every retry.
-            if ($isReinstall) {
-                $installation->increment('install_count');
-                $installation->refresh();
-            }
+            [$installation, $isNewInstall, $isReinstall] = $this->recordInstall($app, $validated);
 
             Log::channel(self::LOG)->info('Installation created/updated', [
                 'request_id' => $requestId,
@@ -186,6 +105,20 @@ class WebhookController extends Controller
             WebhookReceived::dispatch($installation->store_url, 'install');
 
             $this->sendInstallEmail($installation, $isNewInstall, $isReinstall, $requestId);
+
+            // Repeat deliveries for an active store are not news.
+            if ($isNewInstall || $isReinstall) {
+                $this->notifyGoogleChat(
+                    $isNewInstall ? 'new_installation' : 'reinstallation',
+                    $app,
+                    $installation,
+                    $requestId,
+                    [
+                        'Shopify plan' => $installation->shopify_plan,
+                        'Install count' => $isReinstall ? (string) $installation->install_count : null,
+                    ]
+                );
+            }
 
             return response()->json([
                 'success' => true,
@@ -274,20 +207,28 @@ class WebhookController extends Controller
                 ], 404);
             }
 
-            // Only the first uninstall webhook is a state change; later ones
-            // are repeats of a store that is already marked inactive.
-            $wasActive = (bool) $installation->is_active;
+            // Locked like the install: two deliveries at the same instant
+            // would otherwise both see the store active and both notify.
+            [$installation, $wasActive] = DB::transaction(function () use ($installation) {
+                $installation = Installation::lockForUpdate()->findOrFail($installation->id);
 
-            // Get current app_plan and update status
-            $appPlan = $installation->app_plan ?? [];
-            $appPlan['status'] = 'CANCELLED';
-            $appPlan['plan_expires_at'] = null;
+                // Only the first uninstall webhook is a state change; later ones
+                // are repeats of a store that is already marked inactive.
+                $wasActive = (bool) $installation->is_active;
 
-            // Mark as inactive and update plan
-            $installation->update([
-                'is_active' => false,
-                'app_plan' => $appPlan,
-            ]);
+                // Get current app_plan and update status
+                $appPlan = $installation->app_plan ?? [];
+                $appPlan['status'] = 'CANCELLED';
+                $appPlan['plan_expires_at'] = null;
+
+                // Mark as inactive and update plan
+                $installation->update([
+                    'is_active' => false,
+                    'app_plan' => $appPlan,
+                ]);
+
+                return [$installation, $wasActive];
+            });
 
             Log::channel(self::LOG)->info('Installation marked as inactive', [
                 'request_id' => $requestId,
@@ -300,6 +241,10 @@ class WebhookController extends Controller
             WebhookReceived::dispatch($installation->store_url, 'uninstall');
 
             $this->sendUninstallEmail($installation, $wasActive, $requestId);
+
+            if ($wasActive) {
+                $this->notifyGoogleChat('uninstallation', $app, $installation, $requestId);
+            }
 
             return response()->json([
                 'success' => true,
@@ -455,6 +400,11 @@ class WebhookController extends Controller
                 // Don't fail the webhook if Slack notification fails
             }
 
+            $this->notifyGoogleChat('plan_change', $app, $installation, $requestId, [
+                'Plan' => $validated['app_plan']['plan_name'] ?? 'Unknown',
+                'Status' => $status ?: null,
+            ]);
+
             return response()->json([
                 'success' => true,
                 'message' => 'Plan change recorded successfully',
@@ -487,6 +437,33 @@ class WebhookController extends Controller
                 'message' => 'Failed to process plan change: ' . $e->getMessage(),
             ], 500);
         }
+    }
+
+    /**
+     * The shop owner's name, or null when what arrived is plainly not one.
+     *
+     * Apps fall back to the shop domain when Shopify's shop_owner field comes
+     * back empty, which fills this column with "acme.myshopify.com" instead of
+     * a person. Storing that is worse than storing nothing: the column is what
+     * email templates render as {{customer_name}}, so the junk goes out in the
+     * greeting - and null falls back to "Valued Customer", which reads fine.
+     *
+     * Deliberately narrow: only a value that is unmistakably the domain is
+     * rejected, because a real name that merely resembles the shop's is still
+     * a real name.
+     */
+    protected function ownerName(?string $candidate, string $shopDomain): ?string
+    {
+        $candidate = trim((string) $candidate);
+
+        if ($candidate === '') {
+            return null;
+        }
+
+        $isTheDomain = strcasecmp($candidate, $shopDomain) === 0
+            || preg_match('/\.myshopify\.com$/i', $candidate) === 1;
+
+        return $isTheDomain ? null : $candidate;
     }
 
     /**
@@ -583,6 +560,151 @@ class WebhookController extends Controller
      * already recorded. Sending on every delivery is what produced an
      * installation email every hour for the same merchant.
      */
+    /**
+     * Create or update the installation for an install webhook, and say what
+     * kind of install it was.
+     *
+     * Two deliveries of the same install can arrive in the same instant (the
+     * apps have been seen sending a pair 0s apart). Classifying and writing
+     * must then be one step per store, or both read the store as inactive and
+     * both count - and notify - as a reinstall. The row lock makes the second
+     * delivery wait for the first and then see the store already active.
+     *
+     * @param  array<string, mixed>  $validated
+     * @return array{0: Installation, 1: bool, 2: bool}  installation, is new install, is reinstall
+     */
+    private function recordInstall(App $app, array $validated): array
+    {
+        $write = fn () => DB::transaction(function () use ($app, $validated) {
+            // What kind of install is this? Decided before the write, because
+            // updateOrCreate() erases the distinction.
+            $existing = Installation::where('app_id', $app->id)
+                ->where('store_url', $validated['shop_domain'])
+                ->lockForUpdate()
+                ->first();
+
+            $isNewInstall = $existing === null;
+            $isReinstall = $existing !== null && !$existing->is_active;
+
+            $attributes = [
+                'store_name' => $validated['name'],
+                'email' => $validated['email'],
+                'is_active' => true,
+            ];
+
+            // Optional fields are written only when the payload carries them,
+            // so a repeat delivery with a thinner payload cannot erase what we
+            // already recorded for the store.
+            $ownerName = $this->ownerName(
+                $validated['shop_owner_name'] ?? null,
+                $validated['shop_domain'],
+            );
+
+            if ($ownerName !== null) {
+                $attributes['shop_owner_name'] = $ownerName;
+            }
+
+            if (!empty($validated['currency_code'])) {
+                $attributes['currency'] = $validated['currency_code'];
+            } elseif ($isNewInstall) {
+                $attributes['currency'] = 'USD';
+            }
+
+            if (!empty($validated['shopify_plan'])) {
+                $attributes['shopify_plan'] = $validated['shopify_plan'];
+            }
+
+            /*
+             * The install date is a fact about the store, not about this
+             * delivery: it is set when the row is created, again when a store
+             * that had uninstalled comes back, and to backfill a row that
+             * never got one. A repeat delivery must never move it.
+             *
+             * Apps re-send this webhook outside a real install - on every
+             * authentication, for instance - and some send installed_at as
+             * the moment of the call rather than the store's actual install
+             * date, which walked the date forward every time.
+             */
+            $mayWriteInstallDate = $isNewInstall
+                || $isReinstall
+                || blank($existing?->installed_at);
+
+            if ($mayWriteInstallDate && !empty($validated['installed_at'])) {
+                $attributes['installed_at'] = $validated['installed_at'];
+            }
+
+            // A new install - and a genuine reinstall - starts on Free. A
+            // repeat delivery must not reset a paying merchant back to Free,
+            // which is what happened on every duplicate webhook before.
+            if ($isNewInstall || $isReinstall) {
+                $attributes['app_plan'] = ['plan_name' => 'Free'];
+            }
+
+            // Stated rather than left to the column default, so the model - and
+            // the log line below, which is how this table gets debugged - knows
+            // the count without reading the row back.
+            if ($isNewInstall) {
+                $attributes['install_count'] = 1;
+            }
+
+            // Create or update installation
+            $installation = Installation::updateOrCreate(
+                [
+                    'app_id' => $app->id,
+                    'store_url' => $validated['shop_domain'],
+                ],
+                $attributes
+            );
+
+            if ($installation->wasRecentlyCreated && empty($installation->installed_at)) {
+                $installation->installed_at = $validated['installed_at'] ?? now();
+                $installation->save();
+            }
+
+            // Count real reinstalls only. Counting every inbound webhook (the
+            // previous behaviour) inflated install_count on every retry.
+            if ($isReinstall) {
+                $installation->increment('install_count');
+                $installation->refresh();
+            }
+
+            return [$installation, $isNewInstall, $isReinstall];
+        }, 3); // retried on deadlock: two first-time deliveries both lock the empty slot
+
+        try {
+            return $write();
+        } catch (UniqueConstraintViolationException) {
+            // Both deliveries found no row and raced to create it; this one
+            // lost. The row exists now, so the retry sees a duplicate.
+            return $write();
+        }
+    }
+
+    /**
+     * Post an event to Google Chat. Never fails the webhook: the service
+     * logs its own HTTP failures, and anything unexpected is logged here.
+     *
+     * @param  array<string, string|null>  $details
+     */
+    private function notifyGoogleChat(
+        string $event,
+        App $app,
+        Installation $installation,
+        ?string $requestId,
+        array $details = []
+    ): void {
+        try {
+            (new GoogleChatService())->notify($event, $app, $installation, $details);
+        } catch (\Exception $e) {
+            Log::channel(self::LOG)->error('Failed to send Google Chat notification', [
+                'request_id' => $requestId,
+                'event' => $event,
+                'installation_id' => $installation->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
     private function sendInstallEmail(
         Installation $installation,
         bool $isNewInstall,

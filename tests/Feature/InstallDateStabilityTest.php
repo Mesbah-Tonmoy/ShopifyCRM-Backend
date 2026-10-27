@@ -57,7 +57,7 @@ class InstallDateStabilityTest extends TestCase
             'shop_domain' => 'gonna-days.myshopify.com',
             'name' => 'GONNA DAYS',
             'email' => 'info@gonnadays.example',
-            'shop_owner_name' => 'gonna-days.myshopify.com',
+            'shop_owner_name' => 'Md. Mesbah Hossain',
         ], $overrides));
     }
 
@@ -117,6 +117,47 @@ class InstallDateStabilityTest extends TestCase
         $this->installWebhook(['installed_at' => '2026-10-16 02:31:49'])->assertOk();
 
         $this->assertSame('2026-10-16 02:31:49', $this->installation()->installed_at->toDateTimeString());
+    }
+
+    /* -----------------------------------------------------------------
+     | The owner name
+     | -----------------------------------------------------------------
+     */
+
+    /**
+     * Apps fall back to the shop domain when Shopify's shop_owner is empty.
+     * The column is rendered as {{customer_name}} in email templates, so
+     * storing the domain greets the merchant by their own URL.
+     */
+    public function test_the_shop_domain_is_not_stored_as_an_owner_name(): void
+    {
+        $this->installWebhook(['shop_owner_name' => 'gonna-days.myshopify.com'])->assertOk();
+
+        $this->assertNull($this->installation()->shop_owner_name);
+    }
+
+    public function test_any_myshopify_domain_is_rejected_as_an_owner_name(): void
+    {
+        $this->installWebhook(['shop_owner_name' => 'Some-Other-Store.myshopify.com'])->assertOk();
+
+        $this->assertNull($this->installation()->shop_owner_name);
+    }
+
+    public function test_a_real_owner_name_is_kept(): void
+    {
+        $this->installWebhook(['shop_owner_name' => 'Md. Mesbah Hossain'])->assertOk();
+
+        $this->assertSame('Md. Mesbah Hossain', $this->installation()->shop_owner_name);
+    }
+
+    public function test_junk_does_not_overwrite_an_owner_name_we_already_have(): void
+    {
+        $this->installWebhook(['shop_owner_name' => 'Md. Mesbah Hossain'])->assertOk();
+
+        // A later delivery falls back to the domain; the real name must stand.
+        $this->installWebhook(['shop_owner_name' => 'gonna-days.myshopify.com'])->assertOk();
+
+        $this->assertSame('Md. Mesbah Hossain', $this->installation()->shop_owner_name);
     }
 
     /* -----------------------------------------------------------------
@@ -182,7 +223,7 @@ class InstallDateStabilityTest extends TestCase
 
         $installation = $this->installation();
 
-        $this->assertSame('gonna-days.myshopify.com', $installation->shop_owner_name);
+        $this->assertSame('Md. Mesbah Hossain', $installation->shop_owner_name);
         $this->assertSame(3, $installation->install_count);
     }
 

@@ -75,7 +75,7 @@ return [
         'webhooks' => [
             'driver' => 'stack',
             'channels' => ['webhooks_file', 'stderr'],
-            'ignore_exceptions' => false,
+            'ignore_exceptions' => true,
         ],
 
         'webhooks_file' => [
@@ -92,7 +92,7 @@ return [
         'emails' => [
             'driver' => 'stack',
             'channels' => ['emails_file', 'stderr'],
-            'ignore_exceptions' => false,
+            'ignore_exceptions' => true,
         ],
 
         'emails_file' => [
