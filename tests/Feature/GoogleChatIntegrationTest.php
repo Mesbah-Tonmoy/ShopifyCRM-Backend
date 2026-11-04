@@ -8,6 +8,7 @@ use App\Models\Integration;
 use App\Models\Permission;
 use App\Models\Role;
 use App\Models\User;
+use App\Services\GoogleChatService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request as HttpRequest;
 use Illuminate\Support\Facades\DB;
@@ -127,11 +128,40 @@ class GoogleChatIntegrationTest extends TestCase
 
         Http::assertSentCount(2);
         Http::assertSent(fn (HttpRequest $request) => $request->url() === self::WEBHOOK_URL
-            && str_contains($request['text'], '*New installation* · FormCRM')
-            && str_contains($request['text'], 'Store: Acme Store (acme.myshopify.com)')
-            && str_contains($request['text'], 'Email: owner@acme.example.com')
-            && str_contains($request['text'], 'Shopify plan: Basic'));
-        Http::assertSent(fn (HttpRequest $request) => str_contains($request['text'], '*New installation* · Zapio'));
+            && str_contains($request['fallbackText'], 'New installation · FormCRM')
+            && str_contains($request['fallbackText'], 'Store: Acme Store (acme.myshopify.com)')
+            && str_contains($request['fallbackText'], 'Email: owner@acme.example.com')
+            && str_contains($request['fallbackText'], 'Shopify plan: Basic'));
+        Http::assertSent(fn (HttpRequest $request) => str_contains($request['fallbackText'], 'New installation · Zapio'));
+    }
+
+    public function test_events_are_sent_as_cards_with_a_coloured_label(): void
+    {
+        $this->addSpace(['events' => ['new_installation', 'uninstallation'], 'app_ids' => [$this->formCrm->id]]);
+
+        $this->postJson('/api/webhooks/install', [
+            'app_url' => $this->formCrm->app_url,
+            'shop_domain' => 'acme.myshopify.com',
+            'name' => 'Tom & Jerry <Shop>',
+            'email' => 'owner@acme.example.com',
+            'shopify_plan' => 'Basic',
+        ])->assertOk();
+        $this->uninstall($this->formCrm);
+
+        $cardText = fn (HttpRequest $request) => collect($request['cardsV2'][0]['card']['sections'][0]['widgets'])
+            ->pluck('textParagraph.text')->implode("\n");
+
+        Http::assertSent(function (HttpRequest $request) use ($cardText) {
+            $text = $cardText($request);
+
+            return str_contains($text, '<font color="#1E8E3E"><b>● New installation</b></font> · <b>FormCRM</b>')
+                // Store values are escaped, so a name can't break the card markup.
+                && str_contains($text, '<b>Store:</b> Tom &amp; Jerry &lt;Shop&gt;')
+                && str_contains($text, '<a href="https://acme.myshopify.com">acme.myshopify.com</a>')
+                && str_contains($text, '<b>Shopify plan:</b> Basic')
+                && !isset($request['text']);
+        });
+        Http::assertSent(fn (HttpRequest $request) => str_contains($cardText($request), '<font color="#D93025"><b>● Uninstallation</b></font>'));
     }
 
     public function test_each_app_posts_to_its_own_space(): void
@@ -145,11 +175,11 @@ class GoogleChatIntegrationTest extends TestCase
 
         Http::assertSentCount(2);
         Http::assertSent(fn (HttpRequest $request) => $request->url() === self::FORMCRM_SPACE
-            && str_contains($request['text'], '· FormCRM'));
+            && str_contains($request['fallbackText'], '· FormCRM'));
         Http::assertSent(fn (HttpRequest $request) => $request->url() === self::ZAPIO_SPACE
-            && str_contains($request['text'], '· Zapio'));
+            && str_contains($request['fallbackText'], '· Zapio'));
         Http::assertNotSent(fn (HttpRequest $request) => $request->url() === self::FORMCRM_SPACE
-            && str_contains($request['text'], '· Zapio'));
+            && str_contains($request['fallbackText'], '· Zapio'));
     }
 
     public function test_spaces_choose_their_own_events(): void
@@ -162,9 +192,9 @@ class GoogleChatIntegrationTest extends TestCase
 
         Http::assertSentCount(2);
         Http::assertSent(fn (HttpRequest $request) => $request->url() === self::FORMCRM_SPACE
-            && str_contains($request['text'], '*New installation*'));
+            && str_contains($request['fallbackText'], 'New installation ·'));
         Http::assertSent(fn (HttpRequest $request) => $request->url() === self::ZAPIO_SPACE
-            && str_contains($request['text'], '*Uninstallation*'));
+            && str_contains($request['fallbackText'], 'Uninstallation ·'));
     }
 
     public function test_every_matching_space_is_posted_to_but_a_shared_webhook_only_once(): void
@@ -239,9 +269,9 @@ class GoogleChatIntegrationTest extends TestCase
         $this->install($this->formCrm);
 
         Http::assertSentCount(2);
-        Http::assertSent(fn (HttpRequest $request) => str_contains($request['text'], '*Uninstallation* · FormCRM'));
-        Http::assertSent(fn (HttpRequest $request) => str_contains($request['text'], '*Reinstallation* · FormCRM')
-            && str_contains($request['text'], 'Install count: 2'));
+        Http::assertSent(fn (HttpRequest $request) => str_contains($request['fallbackText'], 'Uninstallation · FormCRM'));
+        Http::assertSent(fn (HttpRequest $request) => str_contains($request['fallbackText'], 'Reinstallation · FormCRM')
+            && str_contains($request['fallbackText'], 'Install count: 2'));
     }
 
     public function test_plan_change_posts_when_selected(): void
@@ -256,9 +286,9 @@ class GoogleChatIntegrationTest extends TestCase
         ])->assertOk();
 
         Http::assertSentCount(1);
-        Http::assertSent(fn (HttpRequest $request) => str_contains($request['text'], '*Plan change* · FormCRM')
-            && str_contains($request['text'], 'Plan: Pro')
-            && str_contains($request['text'], 'Status: ACTIVE'));
+        Http::assertSent(fn (HttpRequest $request) => str_contains($request['fallbackText'], 'Plan change · FormCRM')
+            && str_contains($request['fallbackText'], 'Plan: Pro')
+            && str_contains($request['fallbackText'], 'Status: ACTIVE'));
     }
 
     public function test_a_google_chat_failure_does_not_fail_the_webhook(): void
@@ -371,7 +401,12 @@ class GoogleChatIntegrationTest extends TestCase
             ->assertOk()->assertJson(['success' => true]);
 
         Http::assertSent(fn (HttpRequest $request) => $request->url() === self::WEBHOOK_URL
-            && str_contains($request['text'], 'Test message'));
+            && str_contains($request['fallbackText'], 'Test message')
+            // Previews every event label, so a colour Chat drops is visible at once.
+            && collect(GoogleChatService::EVENTS)->every(fn (string $label) => str_contains(
+                $request['cardsV2'][0]['card']['sections'][0]['widgets'][1]['textParagraph']['text'],
+                "<b>● {$label}</b>"
+            )));
 
         $this->actingAs($user)->postJson('/api/integrations/google-chat/test', ['webhook_url' => 'https://evil.example.com/hook'])
             ->assertStatus(422);
